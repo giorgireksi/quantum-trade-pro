@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ChartLab — UI/UX concept board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0e14; --bg2:#0f131b; --panel:#12171f; --panel2:#161c26;
+  --line:#1d2532; --line2:#2a3547;
+  --ink:#dbe4f0; --ink-dim:#8b98ab; --ink-faint:#5b6778;
+  --amber:#ffb020; --amber-soft:#ffcf6e;
+  --blue:#4c8dff; --cyan:#35c4e8;
+  --up:#2ebd85; --down:#e4574f;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',sans-serif;
+  --disp:'Unbounded',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;overflow:hidden}
+.app{display:grid;grid-template-columns:44px 1fr 236px;grid-template-rows:52px 1fr 28px;height:100vh;width:100vw}
+/* ---------- TOP BAR ---------- */
+.topbar{grid-column:1/4;display:flex;align-items:center;gap:14px;padding:0 10px 0 0;background:var(--bg2);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:9px;padding:0 14px;height:52px;border-right:1px solid var(--line)}
+.brand .mark{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--amber),#ff7a1a);display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:12px;color:#1a1204}
+.brand .word{font-family:var(--disp);font-size:12.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase}
+.brand .word b{color:var(--amber)}
+.sym{display:flex;align-items:center;gap:8px;cursor:pointer;padding:5px 10px;border:1px solid var(--line2);border-radius:6px;background:var(--panel)}
+.sym .s{font-family:var(--mono);font-weight:600;font-size:13px}
+.sym .ex{color:var(--ink-faint);font-size:10px;letter-spacing:.08em}
+.sym .caret{color:var(--ink-faint);font-size:9px}
+.seg{display:flex;align-items:center;gap:2px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);padding:2px}
+.seg button{background:none;border:0;color:var(--ink-dim);font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:4px;cursor:pointer}
+.seg button.on{background:var(--amber);color:#1a1204;font-weight:600}
+.seg button:hover{color:var(--ink)}
+.divider{width:1px;height:22px;background:var(--line2)}
+.iconbtn{background:none;border:0;color:var(--ink-dim);font-size:15px;padding:5px 8px;border-radius:5px;cursor:pointer}
+.iconbtn:hover{background:var(--panel2);color:var(--ink)}
+.topright{margin-left:auto;display:flex;align-items:center;gap:8px}
+.alertbtn{display:flex;align-items:center;gap:6px;background:var(--amber);color:#1a1204;font-weight:600;font-family:var(--mono);font-size:11px;padding:6px 12px;border:0;border-radius:6px;cursor:pointer}
+.avatar{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#35c4e8,#4c8dff);color:#04141a;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:11px}
+/* ---------- LEFT TOOL RAIL ---------- */
+.rail{grid-row:2;background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:2px;position:relative}
+.rail .ic{width:34px;height:34px;display:grid;place-items:center;border-radius:7px;color:var(--ink-dim);cursor:pointer;position:relative;font-size:16px}
+.rail .ic:hover{color:var(--ink);background:var(--panel2)}
+.rail .ic.on{color:#1a1204;background:var(--amber)}
+.rail .ic.active{color:var(--amber)}
+.rail .sep{width:26px;height:1px;background:var(--line2);margin:5px 0}
+.rail .bottom{margin-top:auto}
+/* flyout */
+.flyout{position:absolute;left:46px;top:8px;width:236px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 18px 50px rgba(0,0,0,.55);padding:8px;z-index:50}
+.flyout .cap{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);padding:6px 8px 4px}
+.flyout .row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;cursor:pointer;color:var(--ink-dim)}
+.flyout .row:hover,.flyout .row.on{background:var(--panel2);color:var(--ink)}
+.flyout .row .g{width:18px;height:18px;display:grid;place-items:center;font-size:14px}
+.flyout .row .n{font-size:12px}
+.flyout .row .k{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--ink-faint)}
+/* ---------- CHART ---------- */
+.chart{position:relative;background:radial-gradient(1200px 700px at 70% -10%,#10141d 0%,var(--bg) 60%);overflow:hidden}
+#cv{position:absolute;inset:0;width:100%;height:100%}
+.crosshair-chip{position:absolute;top:86px;left:18px;background:rgba(11,14,20,.82);border:1px solid var(--line2);border-radius:6px;font-family:var(--mono);font-size:11px;padding:5px 9px;display:flex;gap:10px;backdrop-filter:blur(4px);pointer-events:none}
+.crosshair-chip b{font-weight:600}
+.crosshair-chip .o{color:var(--ink-dim)} .crosshair-chip .h{color:var(--up)} .crosshair-chip .l{color:var(--down)} .crosshair-chip .c{color:var(--ink)}
+/* ---------- RIGHT PANEL ---------- */
+.objpanel{grid-row:2;grid-column:3;background:var(--bg2);border-left:1px solid var(--line);display:flex;flex-direction:column}
+.ophead{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+.ophead .t{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);font-weight:600}
+.ophead .cnt{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);border:1px solid var(--line2);padding:2px 7px;border-radius:10px}
+.opsearch{margin:8px 10px;background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:5px 9px;color:var(--ink-faint);font-size:11px;font-family:var(--mono)}
+.oplist{flex:1;overflow:hidden;padding:2px 6px 8px}
+.op{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:6px;cursor:pointer}
+.op:hover{background:var(--panel2)}
+.op .dot{width:8px;height:8px;border-radius:3px;flex:none}
+.op .name{font-size:11.5px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.op .type{font-size:9px;color:var(--ink-faint);font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.op .eye{color:var(--ink-faint);font-size:12px}
+.op .eye.off{opacity:.35}
+.opsect{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);padding:10px 8px 4px;font-weight:600}
+/* ---------- BOTTOM BAR ---------- */
+.statusbar{grid-column:1/4;background:var(--bg2);border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-dim)}
+.statusbar .lbl{color:var(--ink-faint)}
+.statusbar .val{color:var(--ink)}
+.statusbar .up{color:var(--up)} .statusbar .down{color:var(--down)}
+.statusbar .right{margin-left:auto;display:flex;gap:16px}
+.hint{position:absolute;bottom:38px;right:248px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.06em}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- top bar -->
+  <div class="topbar">
+    <div class="brand"><div class="mark">C</div><div class="word">chart<b>lab</b></div></div>
+    <div class="sym"><span class="s">AAPL</span><span class="ex">NASDAQ&nbsp;•&nbsp;USD</span><span class="caret">▼</span></div>
+    <div class="seg">
+      <button>1m</button><button>5m</button><button>15m</button><button>1h</button><button>4h</button><button class="on">1D</button><button>1W</button><button>1M</button>
+    </div>
+    <div class="divider"></div>
+    <button class="iconbtn" title="Chart type">▮</button>
+    <button class="iconbtn" title="Indicators">fx</button>
+    <button class="iconbtn" title="Compare">⇄</button>
+    <button class="iconbtn" title="Alerts">🔔</button>
+    <div class="divider"></div>
+    <button class="iconbtn" title="Undo">↺</button>
+    <button class="iconbtn" title="Redo">↻</button>
+    <button class="iconbtn" title="Templates">▤</button>
+    <div class="topright">
+      <button class="alertbtn">+ ALERT</button>
+      <div class="avatar">AR</div>
+    </div>
+  </div>
+
+  <!-- left rail -->
+  <div class="rail">
+    <div class="ic on" title="Cursor">✛</div>
+    <div class="ic active" title="Trend tools">╱</div>
+    <div class="ic" title="Gann & Fibonacci">🜁</div>
+    <div class="ic" title="Geometric shapes">◇</div>
+    <div class="ic" title="Annotations">T</div>
+    <div class="ic" title="Patterns">𝍌</div>
+    <div class="ic" title="Forecast & measure">⤳</div>
+    <div class="sep"></div>
+    <div class="ic" title="Measure">📏</div>
+    <div class="ic" title="Zoom in">⊕</div>
+    <div class="ic" title="Magnets">🧲</div>
+    <div class="ic" title="Keep drawing">∞</div>
+    <div class="ic" title="Lock all">🔒</div>
+    <div class="ic" title="Hide all">👁</div>
+    <div class="sep"></div>
+    <div class="ic bottom" title="More">⋯</div>
+
+    <!-- flyout: trend tools -->
+    <div class="flyout">
+      <div class="cap">Trend tools</div>
+      <div class="row on"><span class="g">╲</span><span class="n">Trend line</span><span class="k">T</span></div>
+      <div class="row"><span class="g">╱</span><span class="n">Ray</span></div>
+      <div class="row"><span class="g">─</span><span class="n">Horizontal line</span><span class="k">H</span></div>
+      <div class="row"><span class="g">│</span><span class="n">Vertical line</span><span class="k">V</span></div>
+      <div class="row"><span class="g">⇌</span><span class="n">Extended line</span></div>
+      <div class="row"><span class="g">↗</span><span class="n">Trend angle</span></div>
+      <div class="row"><span class="g">∥</span><span class="n">Parallel channel</span><span class="k">C</span></div>
+      <div class="row"><span class="g">≋</span><span class="n">Regression trend</span></div>
+      <div class="row"><span class="g">▱</span><span class="n">Flat top / bottom</span></div>
+      <div class="row"><span class="g">⫽</span><span class="n">Crossline</span></div>
+      <div class="cap">Pitchforks</div>
+      <div class="row"><span class="g">⸛</span><span class="n">Pitchfork</span><span class="k">F</span></div>
+      <div class="row"><span class="g">⸛</span><span class="n">Schiff pitchfork</span></div>
+    </div>
+  </div>
+
+  <!-- chart -->
+  <div class="chart">
+    <canvas id="cv"></canvas>
+    <div class="crosshair-chip">
+      <span><b>AAPL</b>&nbsp;·&nbsp;1D</span>
+      <span class="o">O <b>172.41</b></span>
+      <span class="h">H <b>175.86</b></span>
+      <span class="l">L <b>171.02</b></span>
+      <span class="c">C <b>174.92</b></span>
+    </div>
+    <div class="hint">CONCEPT BOARD — layout &amp; aesthetic direction only, not functional</div>
+  </div>
+
+  <!-- objects panel -->
+  <div class="objpanel">
+    <div class="ophead"><span class="t">Objects</span><span class="cnt">7</span></div>
+    <div class="opsearch">⌕ &nbsp;filter objects…</div>
+    <div class="oplist">
+      <div class="opsect">Volume</div>
+      <div class="op"><span class="dot" style="background:var(--amber)"></span><span class="name">Anchored VWAP (Oct 12)</span><span class="eye">👁</span></div>
+      <div class="op"><span class="dot" style="background:#35c4e8"></span><span class="name">VWAP σ-bands</span><span class="eye">👁</span></div>
+      <div class="op"><span class="dot" style="background:var(--up)"></span><span class="name">Fixed-range vol profile</span><span class="eye">👁</span></div>
+      <div class="opsect">Trend</div>
+      <div class="op"><span class="dot" style="background:var(--blue)"></span><span class="name">Trend line 1</span><span class="eye">👁</span></div>
+      <div class="op"><span class="dot" style="background:#8b9bb4"></span><span class="name">Fib retracement</span><span class="eye">👁</span></div>
+      <div class="op"><span class="dot" style="background:var(--down)"></span><span class="name">Horizontal line</span><span class="type">pane&nbsp;H·L</span><span class="eye">👁</span></div>
+      <div class="op"><span class="dot" style="background:var(--cyan)"></span><span class="name">Parallel channel</span><span class="eye">👁</span></div>
+      <div class="opsect">Levels</div>
+      <div class="op"><span class="dot" style="background:var(--amber-soft)"></span><span class="name">POC · value area</span><span class="type">computed</span><span class="eye">👁</span></div>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <span class="lbl">Open</span><span class="val">172.41</span>
+    <span class="lbl">High</span><span class="val">175.86</span>
+    <span class="lbl">Low</span><span class="val">171.02</span>
+    <span class="lbl">Close</span><span class="val">174.92</span>
+    <span class="lbl">Chg</span><span class="val up">+2.51&nbsp;(+1.46%)</span>
+    <span class="right">
+      <span class="lbl">Vol</span><span class="val">58.3M</span>
+      <span class="lbl">Range</span><span class="val">2024-10-14 → 2025-04-14</span>
+      <span class="lbl">Layout</span><span class="val">1×1</span>
+      <span class="lbl">Data</span><span class="val up">● live</span>
+    </span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  const W = cv.parentElement.clientWidth, H = cv.parentElement.clientHeight;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = W*dpr; cv.height = H*dpr; ctx.scale(dpr,dpr);
+
+  /* deterministic random walk -> synthetic daily bars */
+  let seed = 42;
+  const rnd = () => (seed = (seed*16807)%2147483647)/2147483647;
+  const N = 190, bars = [], start = 148;
+  let p = start;
+  for (let i=0;i<N;i++){
+    const drift = 0.0009, vol = 0.014;
+    const o = p, c = p*(1+drift+(rnd()-0.5)*2*vol);
+    const hi = Math.max(o,c)*(1+rnd()*0.006), lo = Math.min(o,c)*(1-rnd()*0.006);
+    bars.push({o,h:hi,l:lo,c,v:(0.4+rnd()*1.1)*1e6});
+    p = c;
+  }
+  /* chart geometry */
+  const padL=14, padR=64, padT=24, padB=26;
+  const cw = W-padL-padR, ch = H-padT-padB;
+  const lo = Math.min(...bars.map(b=>b.l))*0.985, hi = Math.max(...bars.map(b=>b.h))*1.015;
+  const x = i => padL + (i+0.5)*cw/N;
+  const y = v => padT + (1-(v-lo)/(hi-lo))*ch;
+  const pi = idx => Math.round((idx-padL)/cw*N-0.5);
+
+  /* grid: horizontal lines */
+  ctx.font = '10px "IBM Plex Mono"';
+  const steps=6;
+  for (let s=0;s<=steps;s++){
+    const v = lo+(hi-lo)*s/steps, yy=y(v);
+    ctx.strokeStyle='rgba(42,53,71,.35)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(W-padR,yy); ctx.stroke();
+    ctx.fillStyle='#5b6778'; ctx.textAlign='left';
+    ctx.fillText(v.toFixed(2), W-padR+8, yy+3);
+  }
+  /* vertical grid + time labels */
+  for (let i=0;i<=6;i++){
+    const idx=Math.round(i*N/7), xx=x(idx);
+    ctx.strokeStyle='rgba(42,53,71,.22)';
+    ctx.beginPath(); ctx.moveTo(xx,padT); ctx.lineTo(xx,H-padB); ctx.stroke();
+    const d=new Date(2024+(idx/N)*0.5, 1+(idx/N)*3, 10+idx*1.2);
+    ctx.fillStyle='#5b6778'; ctx.textAlign='center';
+    ctx.fillText((d.getMonth()+1)+'/'+d.getDate(), xx, H-padB+16);
+  }
+
+  /* candles */
+  for (let i=0;i<N;i++){
+    const b=bars[i], up=b.c>=b.o;
+    ctx.strokeStyle = ctx.fillStyle = up ? 'rgba(46,189,133,.92)' : 'rgba(228,87,79,.92)';
+    ctx.lineWidth=1;
+    const bw=Math.max(2,cw/N*0.62);
+    ctx.beginPath(); ctx.moveTo(x(i),y(b.h)); ctx.lineTo(x(i),y(b.l)); ctx.stroke();
+    ctx.fillRect(x(i)-bw/2, y(Math.max(b.o,b.c)), bw, Math.max(1,Math.abs(y(b.o)-y(b.c))));
+  }
+
+  /* ---- TREND LINE (blue, with right extension dots) ---- */
+  const t1=20,t2=118, p1=bars[t1].l, p2=bars[t2].h*0.995;
+  ctx.strokeStyle='#4c8dff'; ctx.lineWidth=1.6;
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(x(t1),y(p1));
+  const ext = (N+60-t2)*(p2-p1)/(t2-t1);
+  ctx.lineTo(x(t2),y(p2)); ctx.stroke();
+  ctx.setLineDash([4,4]);
+  ctx.beginPath(); ctx.moveTo(x(t2),y(p2)); ctx.lineTo(x(N+60), y(p2+ext)); ctx.stroke();
+  ctx.setLineDash([]);
+  /* handles */
+  for (const [ix,pv] of [[t1,p1],[t2,p2]]){
+    ctx.fillStyle='#0b0e14'; ctx.strokeStyle='#4c8dff';
+    ctx.beginPath(); ctx.arc(x(ix),y(pv),3,0,7); ctx.fill(); ctx.stroke();
+  }
+
+  /* ---- FIB RETRACEMENT ---- */
+  const f0=38, f1=132, fl0=bars[f0].l*0.998, fl1=bars[f1].h;
+  const levels=[{r:0,l:'0'},{r:.236,l:'0.236'},{r:.382,l:'0.382'},{r:.5,l:'0.5'},{r:.618,l:'0.618'},{r:.786,l:'0.786'},{r:1,l:'1'}];
+  levels.forEach((lv,i)=>{
+    const v = fl1-(fl1-fl0)*lv.r, yy=y(v);
+    ctx.strokeStyle = i===0||i===6 ? '#8b9bb4' : 'rgba(139,155,180,.5)';
+    ctx.lineWidth = i===0||i===6 ? 1.4 : 1;
+    ctx.setLineDash(i===0||i===6?[]:[3,3]);
+    ctx.beginPath(); ctx.moveTo(x(f0),yy); ctx.lineTo(x(f1),yy); ctx.stroke();
+    ctx.setLineDash([]);
+    /* price tag */
+    ctx.fillStyle='rgba(139,155,180,.16)';
+    const tw=44;
+    ctx.fillRect(x(f1)-2, yy-8, tw, 15);
+    ctx.fillStyle='#b9c4d6'; ctx.textAlign='left';
+    ctx.fillText(v.toFixed(2)+'  '+lv.l, x(f1)+1, yy+3.5);
+  });
+
+  /* ---- ANCHORED VWAP + sigma bands (amber) ---- */
+  const a0=30; let sumP=0, sumV=0; const vw=[];
+  for (let i=0;i<N;i++){
+    const b=bars[i]; sumP += ((b.h+b.l+b.c)/3)*b.v; sumV += b.v;
+    const m = sumP/sumV;
+    vw.push({m, v:(0.6 + 6/(i-a0+2))*0.4});
+  }
+  const vwLine = idx => vw[idx].m + (vw[idx].v*0.5)*Math.sin(idx*0.9)*0.6;
+  for (const [col,mult] of [['rgba(255,176,32,.28)',2],['rgba(255,176,32,.16)',1]]){
+    ctx.strokeStyle=col; ctx.lineWidth=1;
+    ctx.beginPath();
+    for(let i=a0;i<N;i++){ const yy=y(vwLine(i)-vw[i].v*mult); i===a0?ctx.moveTo(x(i),yy):ctx.lineTo(x(i),yy); }
+    ctx.stroke();
+    ctx.beginPath();
+    for(let i=a0;i<N;i++){ const yy=y(vwLine(i)+vw[i].v*mult); i===a0?ctx.moveTo(x(i),yy):ctx.lineTo(x(i),yy); }
+    ctx.stroke();
+  }
+  ctx.strokeStyle='#ffb020'; ctx.lineWidth=1.8; ctx.beginPath();
+  for(let i=a0;i<N;i++){ const yy=y(vwLine(i)); i===a0?ctx.moveTo(x(i),yy):ctx.lineTo(x(i),yy); }
+  ctx.stroke();
+  /* anchor label */
+  ctx.fillStyle='#ffb020'; ctx.textAlign='left';
+  ctx.font='600 10px "IBM Plex Mono"';
+  ctx.fillText('AVWAP ▲ anchor 10-14', x(a0)+2, y(vwLine(a0))-5);
+  ctx.fillStyle='#161c26'; ctx.strokeStyle='#ffb020'; ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.arc(x(a0),y(vwLine(a0)),3.4,0,7); ctx.fill(); ctx.stroke();
+
+  /* ---- FIXED-RANGE VOLUME PROFILE (histogram, right side) ---- */
+  const v0=60, v1=150;
+  const rows=26, span=hi-lo;
+  const counts=new Array(rows).fill(0);
+  for (let i=v0;i<=v1;i++){
+    const b=bars[i];
+    const levels_= Math.max(2, Math.round((b.h-b.l)/span*rows));
+    let w=b.v/levels_;
+    for(let k=0;k<levels_;k++){
+      const rv=b.l+ (b.h-b.l)*(k+0.5)/levels_;
+      const ri=Math.min(rows-1, Math.max(0, Math.floor((rv-lo)/span*rows)));
+      counts[ri]+= w;
+    }
+  }
+  const maxc=Math.max(...counts), vaW=counts.slice().sort((a,b)=>b-a);
+  const vaCut=0.7*counts.reduce((a,b)=>a+b,0); let acc=0;
+  for(let i=0;i<rows;i++){ acc+=vaW[i]; if(acc>=vaCut){ var vaLevels=vaW.slice(0,i+1); break; } }
+  const maxW = maxc;
+  const bw_ = ch/rows;
+  let pocRow=0; counts.forEach((c,i)=>{ if(c>counts[pocRow]) pocRow=i; });
+  /* value area band */
+  const vaRows = [];
+  const sortedIdx = counts.map((c,i)=>[c,i]).sort((a,b)=>b[0]-a[0]);
+  acc=0;
+  const tot=counts.reduce((a,b)=>a+b,0);
+  const mark=new Set();
+  for(const [c,i] of sortedIdx){ mark.add(i); acc+=c; if(acc/tot>=0.7) break; }
+  ctx.fillStyle='rgba(255,176,32,.05)';
+  let vaTop=1e9, vaBot=-1e9;
+  for(let i=0;i<rows;i++) if(mark.has(i)){ vaTop=Math.min(vaTop,i); vaBot=Math.max(vaBot,i); }
+  ctx.fillRect(x(v0)-6, y(lo+span*(rows-vaTop)/rows), x(v1)-x(v0)+12, (vaBot-vaTop+1)*bw_);
+  for(let i=0;i<rows;i++){
+    const c=counts[i], vv=lo+span*i/rows;
+    const yy=y(vv+bw_/span), hgt=bw_*ch/span;
+    const wid=Math.max(2,(c/maxW)*Math.min(150,W*0.16));
+    ctx.fillStyle = i===pocRow ? 'rgba(255,176,32,.85)' : 'rgba(46,189,133,.28)';
+    ctx.fillRect(W-padR-wid, yy, wid, Math.max(1,hgt-0.8));
+  }
+  ctx.fillStyle='#ffb020'; ctx.textAlign='right';
+  ctx.font='600 9px "IBM Plex Mono"';
+  ctx.fillText('POC', W-padR-(counts[pocRow]/maxW)*Math.min(150,W*0.16)-4, y(lo+span*(pocRow+0.5)/rows)+3);
+  ctx.fillStyle='#5b6778';
+  ctx.fillText('FRVP 60%  VA', x(v0), padT-8);
+
+  /* range brackets for FRVP */
+  ctx.strokeStyle='rgba(53,196,232,.55)'; ctx.lineWidth=1;
+  [[v0,'#1'],[v1,'#2']].forEach(([ix,lab])=>{
+    ctx.beginPath(); ctx.moveTo(x(ix),padT); ctx.lineTo(x(ix),H-padB); ctx.stroke();
+    ctx.fillStyle='rgba(53,196,232,.55)'; ctx.textAlign='center';
+    ctx.fillText(lab, x(ix), padT-3);
+  });
+
+  /* ---- HORIZONTAL LINE (red, with price tag) ---- */
+  const hl=bars[95].h*1.002, hy=y(hl);
+  ctx.strokeStyle='#e4574f'; ctx.lineWidth=1.1; ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(padL,hy); ctx.lineTo(W-padR,hy); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#e4574f'; ctx.fillRect(W-padR, hy-9, 56, 16);
+  ctx.fillStyle='#140b0b'; ctx.font='600 10px "IBM Plex Mono"'; ctx.textAlign='left';
+  ctx.fillText(hl.toFixed(2), W-padR+5, hy+4);
+
+  /* ---- PARALLEL CHANNEL (cyan, thin) ---- */
+  const c0=51,c1=104, cc0=bars[c0].l, cc1=bars[c1].h;
+  ctx.strokeStyle='rgba(53,196,232,.75)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(x(c0),y(cc0)); ctx.lineTo(x(c1),y(cc1)); ctx.stroke();
+  const off=(cc1-cc0);
+  ctx.beginPath(); ctx.moveTo(x(c0),y(cc0+off*1.4)); ctx.lineTo(x(c1),y(cc1+off*1.4)); ctx.stroke();
+
+  /* crosshair on last bar */
+  const lx=x(N-1);
+  ctx.strokeStyle='rgba(219,228,240,.2)'; ctx.setLineDash([2,3]);
+  ctx.beginPath(); ctx.moveTo(lx,padT); ctx.lineTo(lx,H-padB); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='rgba(219,228,240,.85)';
+  ctx.beginPath(); ctx.arc(lx,y(bars[N-1].c),2.6,0,7); ctx.fill();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+export const C = {
+  bg: "#0b0e14",
+  grid: "rgba(42,53,71,0.32)",
+  gridStrong: "rgba(42,53,71,0.55)",
+  axisText: "#5b6778",
+  axisTextBright: "#8b98ab",
+  up: "#2ebd85",
+  down: "#e4574f",
+  blue: "#4c8dff",
+  cyan: "#35c4e8",
+  amber: "#ffb020",
+  ink: "#dbe4f0",
+  crosshair: "rgba(219,228,240,0.35)",
+  vaFill: "rgba(255,176,32,0.07)",
+  boxFill: "rgba(255,176,32,0.05)",
+  handle: "#ffcf6e",
+};
