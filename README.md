@@ -12,6 +12,8 @@ plain Canvas 2D. No dependencies beyond the dev toolchain.
     npm run check      # type check
     npm run smoke      # headless interaction test (needs chromium)
     npm run p2         # P2 tool extras test
+    ./go.sh            # one-click platform: start server + open browser
+    ./go.sh stop       # stop the server (or just run ./go.sh again = toggle)
 
 Open in any modern browser. Layout autosaves to localStorage.
 
