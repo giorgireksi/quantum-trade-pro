@@ -11,6 +11,7 @@ plain Canvas 2D. No dependencies beyond the dev toolchain.
     npm run build      # production bundle -> dist/
     npm run check      # type check
     npm run smoke      # headless interaction test (needs chromium)
+    npm run p2         # P2 tool extras test
 
 Open in any modern browser. Layout autosaves to localStorage.
 
@@ -22,11 +23,17 @@ Working today:
   bottom time scale, live status bar.
 - **Mock feed**: deterministic OHLCV (AAPL, TSLA, BTCUSD, ETHUSD, EURUSD), realistic
   per-symbol tick size + volatility; multi-timeframe aggregation with caching.
-- **16 drawing tools**: trend line, ray, extended line, horizontal line/ray, vertical
-  line, parallel channel, rectangle, text, price label, measure, fib retracement,
-  **anchored VWAP (±1σ/±2σ bands)**, **fixed-range volume profile**, **anchored
-  volume profile** (TV row-binning algorithm, total/up-down/delta modes, value area,
-  POC), plus eraser.
+- **34 working tools** — basics: trend line, ray, extended line, horizontal line/ray,
+  vertical line, parallel channel, rectangle, text, price label, measure, fib
+  retracement, eraser.
+  **Volume**: anchored VWAP (±1σ/±2σ bands), fixed-range volume profile, anchored
+  volume profile (TV row-binning algorithm, total/up-down/delta modes, value area,
+  POC).
+  **P2 wave**: trend angle, regression trend, flat top/bottom, crossline, pitchfork,
+  Schiff pitchfork, Gann fan, Gann box, ellipse, circle, triangle, polyline, freehand
+  brush, highlighter, arrow, note, callout, Elliott waves (1–5).
+  Remaining TV taxonomy rows stay greyed out in the flyouts (arc, pin, flag, table,
+  XABCD/ABCD, head & shoulders, three drives, position tools, fib extras…).
 - **Object workflow**: selection + drag (body or anchors), settings dialog
   (double-click / right-click), right-click context menu, duplicate, lock/hide per
   object, lock-all / hide-all / remove-all, filters in the Objects panel,
@@ -41,6 +48,8 @@ Working today:
 | T/H/V/C/R | trendline / horizontal / vertical / parallel channel / rectangle |
 | F / M / W / P | fib retracement / measure / anchored VWAP / fixed-range volume profile |
 | X / L / E | text / price label / eraser |
+| G / B / A / N / F2 | Gann fan / brush / arrow / note / pitchfork |
+| P (shapes) | polyline: click points, Enter or double-click to finish |
 | Esc | cancel gesture → deselect → back to cursor |
 | Del | remove selected drawing |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |

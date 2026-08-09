@@ -156,7 +156,11 @@ function magnetize(px: number, py: number): Anchor {
 // ---------------- tool flow ----------------
 function addDrawing(type: string, anchors: Anchor[], extra?: Partial<Drawing>) {
   const def = TOOLS_BY_TYPE.get(type)!;
-  const d: Drawing = { id: uid(), type, anchors, settings: cloneSettings(def.defaults), locked: false, hidden: false, createdAt: Date.now(), ...extra };
+  const settings = cloneSettings(def.defaults);
+  if (type === "gannfan" || type === "gannbox") {
+    settings.capture = { bars: vp.barCount, span: vp.priceHi - vp.priceLo };
+  }
+  const d: Drawing = { id: uid(), type, anchors, settings: { ...settings, ...extra?.settings }, locked: false, hidden: false, createdAt: Date.now(), ...extra };
   store.addDraw(d);
   if (!keepDrawing) setTool("cross");
 }
@@ -173,10 +177,13 @@ function renderModeTip() {
   if (activeTool === "cross" || activeTool === "eraser") { tip.hidden = true; return; }
   const def = TOOLS_BY_TYPE.get(activeTool)!;
   const nClicks = def.clicks ?? 1;
-  const clicksLeft = nClicks > 1 ? nClicks - (flow?.anchors.length ?? 0) : 1;
-  const how = nClicks > 1
-    ? `click ${clicksLeft} more point${clicksLeft > 1 ? "s" : ""}`
-    : "click to place";
+  let how: string;
+  if (def.drag) how = "hold & drag to sketch";
+  else if (def.unbounded) how = "click to add points · Enter or double-click to finish";
+  else if (nClicks > 1) {
+    const clicksLeft = nClicks - (flow?.anchors.length ?? 0);
+    how = `click ${clicksLeft} more point${clicksLeft > 1 ? "s" : ""}`;
+  } else how = "click to place";
   tip.innerHTML = `<b>${def.label}</b> — ${how} · <span>esc cancel</span>`;
   tip.hidden = false;
 }
@@ -204,11 +211,30 @@ function topHit(px: number, py: number): { d: Drawing; hit: { part: string; idx:
   return null;
 }
 
+let capture: { type: string; anchors: { t: number; price: number }[]; fix: number } | null = null;
+let lastScreen = { x0: 0, y0: 0 };
+
 cv.addEventListener("pointerdown", (e: PointerEvent) => {
   e.preventDefault();
   const { px, py } = pos(e);
   if (!inRect(px, py)) return;
   flow = flow && flow.type ? flow : null;
+
+  const def0 = TOOLS_BY_TYPE.get(activeTool);
+  if (def0?.drag) {
+    const hit0 = topHit(px, py);
+    capture = { type: def0.type, anchors: [], fix: -1 };
+    if (hit0 && hit0.d.type === def0.type && !hit0.d.locked) {
+      store.select(hit0.d.id);
+      const ds = hit0.d;
+      capture.fix = tToIdx(bars, ds.anchors[0].t);
+      capture.anchors = ds.anchors.map(a => ({ t: a.t, price: a.price }));
+      if (capture.anchors.length < 2) capture.anchors = [];
+    }
+    appendCapture(px, py);
+    render();
+    return;
+  }
 
   if (activeTool === "cross") {
     const hit = topHit(px, py);
@@ -237,7 +263,7 @@ cv.addEventListener("pointerdown", (e: PointerEvent) => {
   const nClicks = def.clicks ?? 1;
   const a = magnetize(px, py);
   if (nClicks === 1) {
-    if (def.type === "text" || def.type === "pricelabel") {
+    if (def.type === "text" || def.type === "pricelabel" || def.type === "note" || def.type === "callout") {
       textPending = { px, py, t: a.t, price: a.price };
       placeTextInput(px, py);
       return;
@@ -263,6 +289,7 @@ cv.addEventListener("pointermove", (e: PointerEvent) => {
   const { px, py } = pos(e);
   hover = inRect(px, py) ? { px, py, idx: vp.idxFromX(px) } : null;
   if (!hover) { render(); return; }
+  if (capture) { appendCapture(px, py); render(); return; }
   if (flow && flow.anchors.length < (TOOLS_BY_TYPE.get(flow.type)!.clicks ?? 99)) {
     flow.ghost = magnetize(px, py);
     render();
@@ -298,7 +325,36 @@ cv.addEventListener("pointermove", (e: PointerEvent) => {
   render();
 });
 
+function appendCapture(px: number, py: number) {
+  if (!capture) return;
+  const c = capture;
+  const last = c.anchors[c.anchors.length - 1];
+  const a = magnetize(px, py);
+  if (!last || Math.hypot(px - lastScreen.x0, py - lastScreen.y0) > 2.2) {
+    c.anchors.push(a);
+    lastScreen = { x0: px, y0: py };
+  } else {
+    // keep sliding the last point while the pointer stays close
+    c.anchors[c.anchors.length - 1] = a;
+  }
+}
 function endDrag(e: PointerEvent) {
+  if (capture) {
+    const c = capture;
+    capture = null;
+    if (c.anchors.length >= 2) {
+      if (c.fix >= 0) {
+        const d = store.drawings.find(x => x.id === store.selection);
+        if (d && d.type === c.type) {
+          const orig = JSON.parse(JSON.stringify(d.anchors));
+          d.anchors = c.anchors;
+          store.commitMove(d.id, orig);
+        }
+      } else {
+        addDrawing(c.type, c.anchors);
+      }
+    }
+  }
   if (drag && drag.kind === "draw") {
     store.commitMove(drag.id, drag.origAnchors);
   }
@@ -325,6 +381,13 @@ cv.addEventListener("wheel", (e: WheelEvent) => {
 
 cv.addEventListener("dblclick", (e: MouseEvent) => {
   const { px, py } = pos(e);
+  if (flow && flow.type === "polyline" && flow.anchors.length >= 2) {
+    const f = flow;
+    flow = null;
+    addDrawing(f.type, f.anchors);
+    renderModeTip();
+    return;
+  }
   const hit = inRect(px, py) ? topHit(px, py) : null;
   if (hit) openSettings(hit.d);
 });
@@ -349,12 +412,12 @@ function placeTextInput(px: number, py: number) {
   field.focus(); field.select();
 }
 function commitText() {
-  if (!textPending) return;
+  const tp = textPending;
+  if (!tp) return;
   const val = ($("textinputfield") as HTMLInputElement).value.trim() || "note";
   const def = TOOLS_BY_TYPE.get(activeTool)!;
   closeTextInput();
-  addDrawing(activeTool, [{ t: textPending.t, price: textPending.price }], { settings: { ...cloneSettings(def.defaults), text: val } });
-  textPending = null;
+  addDrawing(activeTool, [{ t: tp.t, price: tp.price }], { settings: { ...cloneSettings(def.defaults), text: val } });
 }
 function closeTextInput() {
   $("textinput").hidden = true;
@@ -363,7 +426,12 @@ function closeTextInput() {
 $("textinputok").addEventListener("click", commitText);
 $("textinputfield").addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key === "Enter") { e.preventDefault(); commitText(); }
-  if (e.key === "Escape") { closeTextInput(); setTool("cross"); }
+  if (e.key === "Escape") {
+      if (capture) { capture = null; render(); }
+      if (flow) { flow = null; render(); }
+      closeTextInput();
+      setTool("cross");
+    }
 });
 
 // ---------------- settings dialog ----------------
@@ -472,6 +540,7 @@ document.addEventListener("pointerdown", (e) => {
 const SHORTCUTS: Record<string, string> = {
   t: "trendline", h: "hline", v: "vline", c: "channel", r: "rect",
   f: "fib", x: "text", l: "pricelabel", m: "measure", w: "avwap", p: "frvp", e: "eraser",
+  g: "gannfan", b: "brush", a: "arrow", n: "note",
 };
 window.addEventListener("keydown", (e: KeyboardEvent) => {
   const tag = (e.target as HTMLElement)?.tagName;
@@ -485,9 +554,17 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key === "Escape") {
     if (!$("ctxmenu").hidden) { closeCtxMenu(); return; }
     if (!$("dlg").hidden) { $("dlg").hidden = true; return; }
+    if (capture) { capture = null; render(); return; }
     if (flow) { flow = null; renderModeTip(); render(); return; }
     store.select(null);
     setTool("cross");
+    return;
+  }
+  if (e.key === "Enter" && flow && flow.type === "polyline" && flow.anchors.length >= 2) {
+    const f2 = flow;
+    flow = null;
+    addDrawing(f2.type, f2.anchors);
+    renderModeTip();
     return;
   }
   if (e.key === "Home") { fitChart(); return; }

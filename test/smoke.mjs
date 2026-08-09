@@ -77,19 +77,84 @@ await page.waitForTimeout(350);
 cnt = await page.textContent("#objcnt");
 check("FRVP added (objects=4)", cnt === "4", "cnt=" + cnt);
 
-// 6. persistence
-const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("chartlab.layout.v1") || "{}"));
-check("layout persisted w/ 4 drawings", saved.drawings?.length === 4, "n=" + saved.drawings?.length);
+// 6. Gann fan (one click)
+await page.keyboard.press("g");
+await page.mouse.click(cx(0.62), cy(0.45));
+await page.waitForTimeout(200);
+cnt = await page.textContent("#objcnt");
+check("Gann fan added (objects=5)", cnt === "5", "cnt=" + cnt);
 
-// 7. undo (keyboard)
+// 7. note via keyboard + text input
+await page.keyboard.press("n");
+await page.mouse.click(cx(0.72), cy(0.76));
+await page.waitForTimeout(150);
+const inputVisible = await page.isVisible("#textinput");
+check("note opens text input", inputVisible, "");
+await page.keyboard.type("hi!");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(250);
+cnt = await page.textContent("#objcnt");
+check("note added (objects=6)", cnt === "6", "cnt=" + cnt);
+
+// 8. brush: drag gesture
+await page.keyboard.press("b");
+await page.mouse.move(cx(0.74), cy(0.18));
+await page.mouse.down();
+await page.mouse.move(cx(0.86), cy(0.12), { steps: 6 });
+await page.mouse.move(cx(0.88), cy(0.26), { steps: 6 });
+await page.mouse.up();
+await page.waitForTimeout(200);
+cnt = await page.textContent("#objcnt");
+check("brush added (objects=7)", cnt === "7", "cnt=" + cnt);
+
+// 9. arrow (two clicks)
+await page.keyboard.press("a");
+await page.mouse.click(cx(0.06), cy(0.8));
+await page.mouse.click(cx(0.15), cy(0.88));
+await page.waitForTimeout(200);
+cnt = await page.textContent("#objcnt");
+check("arrow added (objects=8)", cnt === "8", "cnt=" + cnt);
+
+// 10. polyline via shapes flyout + Enter to finish
+await page.locator(".railgroup").nth(2).locator("button.railbtn.group").click();
+await page.locator(".flyrow", { hasText: "Polyline" }).click();
+await page.waitForTimeout(150);
+await page.mouse.click(cx(0.24), cy(0.85));
+await page.mouse.click(cx(0.36), cy(0.8));
+await page.mouse.click(cx(0.46), cy(0.86));
+await page.keyboard.press("Enter");
+await page.waitForTimeout(200);
+cnt = await page.textContent("#objcnt");
+check("polyline added (objects=9)", cnt === "9", "cnt=" + cnt);
+
+// 11. Elliott waves via patterns flyout (5 clicks)
+await page.locator(".railgroup").nth(4).locator("button.railbtn.group").click();
+await page.locator(".flyrow", { hasText: "Elliott" }).click();
+await page.waitForTimeout(150);
+for (const [fx, fy] of [[0.5, 0.7], [0.565, 0.55], [0.63, 0.68], [0.695, 0.48], [0.76, 0.62]]) {
+  await page.mouse.click(cx(fx), cy(fy));
+}
+await page.waitForTimeout(200);
+cnt = await page.textContent("#objcnt");
+check("Elliott added (objects=10)", cnt === "10", "cnt=" + cnt);
+
+// 12. persistence
+const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("chartlab.layout.v1") || "{}"));
+check("layout persisted w/ 10 drawings", saved.drawings?.length === 10, "n=" + saved.drawings?.length);
+const brushD = saved.drawings?.find(d => d.type === "brush");
+check("brush path has many anchors", brushD && brushD.anchors.length > 10, "n=" + brushD?.anchors?.length);
+const ellD = saved.drawings?.find(d => d.type === "elliott");
+check("elliott has 5 anchors", ellD?.anchors?.length === 5, "n=" + ellD?.anchors?.length);
+
+// 13. undo (keyboard)
 await page.keyboard.press("Control+z");
 await page.waitForTimeout(200);
 cnt = await page.textContent("#objcnt");
-check("undo -> 3 drawings", cnt === "3", "cnt=" + cnt);
+check("undo -> 9 drawings", cnt === "9", "cnt=" + cnt);
 await page.keyboard.press("Control+Shift+z");
 await page.waitForTimeout(200);
 cnt = await page.textContent("#objcnt");
-check("redo -> 4 drawings", cnt === "4", "cnt=" + cnt);
+check("redo -> 10 drawings", cnt === "10", "cnt=" + cnt);
 
 // 8. selection & drag move (hit trendline body, drag)
 await page.keyboard.press("Escape"); // back to cross cursor
@@ -119,7 +184,7 @@ await page.screenshot({ path: "/home/reksi/mar/shots/full.png" });
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForTimeout(700);
 const cntReload = await page.textContent("#objcnt");
-check("drawings survive reload", cntReload === "4", "cnt=" + cntReload);
+check("drawings survive reload", cntReload === "10", "cnt=" + cntReload);
 await page.screenshot({ path: "/home/reksi/mar/shots/reload.png" });
 
 check("no page errors", errors.length === 0, errors.join(" | ").slice(0, 300));

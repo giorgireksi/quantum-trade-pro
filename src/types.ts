@@ -39,5 +39,6 @@ export interface Drawing {
 export interface ToolDef {
   type: string; label: string; icon: string; group: string;
   shortcut?: string; clicks?: number; phase?: string; blurb?: string;
+  drag?: boolean; unbounded?: boolean;
   defaults: Record<string, unknown>;
 }
