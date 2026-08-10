@@ -77,9 +77,10 @@ await page.waitForTimeout(350);
 cnt = await page.textContent("#objcnt");
 check("FRVP added (objects=4)", cnt === "4", "cnt=" + cnt);
 
-// 6. Gann fan (one click)
+// 6. Gann fan (pivot + 8/8 point)
 await page.keyboard.press("g");
 await page.mouse.click(cx(0.62), cy(0.45));
+await page.mouse.click(cx(0.85), cy(0.25));
 await page.waitForTimeout(200);
 cnt = await page.textContent("#objcnt");
 check("Gann fan added (objects=5)", cnt === "5", "cnt=" + cnt);

@@ -36,9 +36,12 @@ export function tToIdx(bars: { t: number }[], t: number): number {
   }
   return lo + (t - bars[lo].t) / Math.max(1e-9, bars[hi].t - bars[lo].t);
 }
+/** time for a (possibly fractional) bar index - linear interpolation, so anchors can sit between bars (free movement, magnet off) */
 export function idxToT(bars: { t: number }[], idx: number): number {
-  const i = clamp(Math.round(idx), 0, bars.length - 1);
-  return bars[i].t;
+  const i = clamp(idx, 0, bars.length - 1);
+  const lo = Math.floor(i);
+  const hi = Math.min(bars.length - 1, lo + 1);
+  return bars[lo].t + (bars[hi].t - bars[lo].t) * (i - lo);
 }
 export function nearestBar(bars: { t: number }[], t: number): number {
   return clamp(Math.round(tToIdx(bars, t)), 0, bars.length - 1);

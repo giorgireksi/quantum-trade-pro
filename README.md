@@ -17,7 +17,24 @@ plain Canvas 2D. No dependencies beyond the dev toolchain.
 
 Open in any modern browser. Layout autosaves to localStorage.
 
-## Status (v0.1)
+## Visual pass (TV parity)
+
+- Full TV palette sweep: line tools default **#2962FF**, down red **#F23645**, note sticky
+  **#ffcf6e**; selection handles are white discs with a colored ring; hover shows the exact
+  grab area; first touch grabs the whole object (TV-style).
+- Gann fan & Gann box are now 2-click TV-style tools (per-line colors 1/8..8/8, labels,
+  background opacity, corner rays, reverse, use-one-color).  Gann box grid 8×8.
+- Regression trend: std-dev channel (0–3σ) + Pearson R chip.  Arrow: arrowhead option
+  (end/both/none), price tag, stats chip.  Callout: 2 click (tail + bubble) + typed text.
+- Note: tail + pin to price anchor.  Pitchfork/Schiff: TV blue + optional channel fill.
+- Polyline can close into a polygon (click first point); brush has optional fill.
+- Elliott: TV-style labels beside legs.  Flat top/bottom: chip + start tick.
+- Interaction: click-vs-drag threshold (mouse 8px / touch 16px), free body-drag with magnet
+  off, magnet weak = bar snap, strong = OHLC snap (TV semantics).
+
+Research: `research/tv-visual-spec.md` (full spec + approximations).
+
+ (v0.1)
 
 Working today:
 - **Chart core**: candles / bars / line / area, 9 timeframes (1m→1W), zoom (wheel),

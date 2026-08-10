@@ -58,9 +58,9 @@ await clickN([[0.24, 0.78], [0.36, 0.3], [0.48, 0.6]]); await expect("pitchfork 
 await pickTool(0, "Schiff pitchfork");
 await clickN([[0.56, 0.8], [0.7, 0.34], [0.86, 0.68]]); await expect("schiff added");
 
-// gann box
+// gann box (two corners)
 await pickTool(1, "Gann box");
-await clickN([[0.3, 0.42]]); await expect("gannbox added");
+await clickN([[0.3, 0.42], [0.52, 0.5]]); await expect("gannbox added");
 
 // shapes
 await pickTool(2, "Ellipse");
@@ -70,9 +70,10 @@ await clickN([[0.88, 0.36], [0.93, 0.55]]); await expect("circle added");
 await pickTool(2, "Triangle");
 await clickN([[0.5, 0.86], [0.62, 0.95], [0.72, 0.82]]); await expect("triangle added");
 
-// callout (annotations group) with typed text
+// callout (annotations group): tail point + bubble point, then typed text
 await pickTool(3, "Callout");
 await page.mouse.click(cx(0.92), cy(0.78));
+await page.mouse.click(cx(0.68), cy(0.38));
 await page.waitForTimeout(150);
 if (!(await page.isVisible("#textinput"))) check("callout opens text input", false, "");
 await page.keyboard.type("buy zone");

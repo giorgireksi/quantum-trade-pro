@@ -4,9 +4,9 @@ import { barsFor } from "./feed";
 import { TFS, SYMBOLS, Bar, Anchor, Drawing, ChartType, SymbolDef, TF } from "./types";
 import { Viewport } from "./viewport";
 import { drawChart } from "./render";
-import { renderDrawing, hitTest, handlesOf, labelOf } from "./drawings/render";
+import { renderDrawing, hitTest, handlesOf, labelOf, paintHitArea } from "./drawings/render";
 import { TOOLS, TOOLS_BY_TYPE, defOf, cloneSettings } from "./drawings/model";
-import { tToIdx, nearestBar, clamp, uid, fmtPrice, fmtVol } from "./util";
+import { tToIdx, nearestBar, clamp, uid, fmtPrice, fmtVol, idxToT } from "./util";
 import { C } from "./palette";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -21,13 +21,11 @@ let activeTool = "cross";
 let keepDrawing = false;
 let magnet: "off" | "weak" | "strong" = "weak";
 let flow: { type: string; anchors: Anchor[]; ghost: Anchor | null } | null = null;
-let textPending: { px: number; py: number; t: number; price: number } | null = null;
-let drag: {
-  kind: "pan"; sx: number; sy: number; barStart: number; priceLo: number; priceHi: number;
-} | {
-  kind: "draw"; id: string; part: "body" | "anchor"; idx: number;
-  grabIdx: number; grabPrice: number; origAnchors: Anchor[];
-} | null = null;
+let textPending: { px: number; py: number; t: number; price: number; anchors?: { t: number; price: number }[] } | null = null;
+type DragState =
+  | { kind: "pan"; sx: number; sy: number; barStart: number; priceLo: number; priceHi: number }
+  | { kind: "draw"; id: string; part: "body" | "anchor"; idx: number; grabIdx: number; grabPrice: number; origAnchors: Anchor[] };
+let drag: DragState | null = null;
 
 // ---------------- data / viewport ----------------
 function loadBars() {
@@ -91,12 +89,20 @@ function render() {
           g.beginPath(); g.arc(vp.x(tToIdx(bars, a.t)), vp.y(a.price), 3, 0, 7); g.fill();
         }
       }
+      // hover hitbox highlight (cross cursor: shows exactly what you can grab)
+      if (activeTool === "cross" && hover) {
+        const hh = topHit(hover.px, hover.py);
+        if (hh) paintHitArea(g, hh.d, bars, vp);
+      }
       // selection handles
       const sel = store.selection ? store.drawings.find(d => d.id === store.selection) : null;
       if (sel && !sel.hidden) {
+        const hc = (sel.settings.color as string) ?? C.blue;
         for (const h of handlesOf(sel, bars, vp)) {
-          g.fillStyle = "#12171f"; g.strokeStyle = C.handle; g.lineWidth = 1.4;
-          g.beginPath(); g.arc(h.x, h.y, 4, 0, 7); g.fill(); g.stroke();
+          g.fillStyle = "#ffffff"; g.strokeStyle = "rgba(11,14,20,0.9)"; g.lineWidth = 1;
+          g.beginPath(); g.arc(h.x, h.y, 5.2, 0, 7); g.fill(); g.stroke();
+          g.fillStyle = hc; g.strokeStyle = "#ffffff"; g.lineWidth = 1.6;
+          g.beginPath(); g.arc(h.x, h.y, 3.6, 0, 7); g.fill(); g.stroke();
         }
       }
     });
@@ -143,14 +149,16 @@ function updateStatus() {
 
 // ---------------- magnet ----------------
 function magnetize(px: number, py: number): Anchor {
-  const idx = clamp(Math.round(vp.idxFromX(px)), 0, bars.length - 1);
-  const b = bars[idx];
+  const rawIdx = clamp(vp.idxFromX(px), 0, bars.length - 1);
+  const b = bars[clamp(Math.round(rawIdx), 0, bars.length - 1)];
   let price = vp.priceFromY(py);
   if (magnet === "strong") {
     const best = [b.o, b.h, b.l, b.c].reduce((m, v) => Math.abs(v - price) < Math.abs(m - price) ? v : m, b.o);
     price = best;
   }
-  return { t: b.t, price };
+  // off = free like a canvas (anchor can sit between bars); weak = snap time to bars; strong = bars + OHLC
+  const idx = magnet === "off" ? rawIdx : Math.round(rawIdx);
+  return { t: idxToT(bars, idx), price };
 }
 
 // ---------------- tool flow ----------------
@@ -200,19 +208,21 @@ function topHit(px: number, py: number): { d: Drawing; hit: { part: string; idx:
   const list = [...store.drawings].reverse();
   for (const d of list) {
     if (d.hidden) continue;
-    const h = hitTest(d, bars, vp, px, py);
-    if (h && (h.part !== "anchor" || !store.selection || store.selection !== d.id)) {
-      // anchors only count when the drawing is already selected
-      if (h.part === "anchor" && store.selection !== d.id) continue;
-      return { d, hit: h };
-    }
-    if (h) return { d, hit: h };
+    const h = hitTest(d, bars, vp, px, py, ctx);
+    if (!h) continue;
+    // anchors only count when the drawing is already selected; a first touch on an
+    // unselected drawing grabs the whole object (body), like TradingView
+    if (h.part === "anchor" && store.selection === d.id) return { d, hit: h };
+    return { d, hit: { part: "body", idx: -1 } };
   }
   return null;
 }
 
 let capture: { type: string; anchors: { t: number; price: number }[]; fix: number } | null = null;
 let lastScreen = { x0: 0, y0: 0 };
+interface PressState { px: number; py: number; type: string; cand: DragState }
+const pressBox: { v: PressState | null } = { v: null as PressState | null };
+let dragActive = false;
 
 cv.addEventListener("pointerdown", (e: PointerEvent) => {
   e.preventDefault();
@@ -242,14 +252,17 @@ cv.addEventListener("pointerdown", (e: PointerEvent) => {
       store.select(hit.d.id);
       if (hit.d.locked) return;
       const a0 = hit.d.anchors[0];
-      drag = {
-        kind: "draw", id: hit.d.id, part: hit.hit.part as "body" | "anchor",
-        idx: hit.hit.idx, grabIdx: tToIdx(bars, a0.t), grabPrice: a0.price,
-        origAnchors: JSON.parse(JSON.stringify(hit.d.anchors)),
+      pressBox.v = {
+        px, py, type: e.pointerType,
+        cand: {
+          kind: "draw", id: hit.d.id, part: hit.hit.part as "body" | "anchor",
+          idx: hit.hit.idx, grabIdx: tToIdx(bars, a0.t), grabPrice: a0.price,
+          origAnchors: JSON.parse(JSON.stringify(hit.d.anchors)),
+        },
       };
     } else {
       store.select(null);
-      drag = { kind: "pan", sx: px, sy: py, barStart: vp.barStart, priceLo: vp.priceLo, priceHi: vp.priceHi };
+      pressBox.v = { px, py, type: e.pointerType, cand: { kind: "pan", sx: px, sy: py, barStart: vp.barStart, priceLo: vp.priceLo, priceHi: vp.priceHi } };
     }
     return;
   }
@@ -272,6 +285,23 @@ cv.addEventListener("pointerdown", (e: PointerEvent) => {
     addDrawing(def.type, [a]);
     return;
   }
+  if (def.unbounded) {
+    const firstScr = flow && flow.anchors.length ? { sx: vp.x(tToIdx(bars, flow.anchors[0].t)), sy: vp.y(flow.anchors[0].price) } : null;
+    if (flow && flow.type === def.type && flow.anchors.length >= 2 && firstScr && Math.hypot(px - firstScr.sx, py - firstScr.sy) < 12) {
+      const f = flow;
+      flow = null;
+      addDrawing(f.type, f.anchors, { settings: { closed: true } });
+      renderModeTip();
+      return;
+    }
+    if (!flow || flow.type !== def.type) {
+      flow = { type: def.type, anchors: [a], ghost: null };
+    } else {
+      flow.anchors.push(a);
+    }
+    renderModeTip();
+    return;
+  }
   if (!flow || flow.type !== def.type) {
     flow = { type: def.type, anchors: [a], ghost: null };
   } else {
@@ -279,6 +309,12 @@ cv.addEventListener("pointerdown", (e: PointerEvent) => {
     if (flow.anchors.length >= nClicks) {
       const f = flow;
       flow = null;
+      if (def.type === "callout") {
+        const last = f.anchors[f.anchors.length - 1];
+        textPending = { px: vp.x(tToIdx(bars, last.t)), py: vp.y(last.price), t: last.t, price: last.price, anchors: f.anchors };
+        placeTextInput(vp.x(tToIdx(bars, last.t)), vp.y(last.price));
+        return;
+      }
       addDrawing(f.type, f.anchors);
     }
   }
@@ -289,14 +325,25 @@ cv.addEventListener("pointermove", (e: PointerEvent) => {
   const { px, py } = pos(e);
   hover = inRect(px, py) ? { px, py, idx: vp.idxFromX(px) } : null;
   if (!hover) { render(); return; }
+  if (activeTool === "cross" && !pressBox.v && !dragActive) {
+    chartEl.style.cursor = topHit(px, py) ? "grab" : "";
+  }
   if (capture) { appendCapture(px, py); render(); return; }
   if (flow && flow.anchors.length < (TOOLS_BY_TYPE.get(flow.type)!.clicks ?? 99)) {
     flow.ghost = magnetize(px, py);
     render();
     return;
   }
+  if (pressBox.v && !dragActive) {
+    // click-vs-drag: mouse/pen needs 8px, a finger 16px (taps drift a lot)
+    const thr = pressBox.v.type === "touch" ? 16 : 8;
+    if (Math.hypot(px - pressBox.v.px, py - pressBox.v.py) > thr) {
+      drag = pressBox.v.cand;
+      dragActive = true;
+    }
+  }
   const dr = drag;
-  if (dr) {
+  if (dr && dragActive) {
     if (dr.kind === "pan") {
       vp.barStart = dr.barStart - (px - dr.sx) / vp.rect.w * vp.barCount;
       const span = dr.priceHi - dr.priceLo;
@@ -313,7 +360,7 @@ cv.addEventListener("pointermove", (e: PointerEvent) => {
         } else {
           const dIdx = vp.idxFromX(px) - dr.grabIdx;
           d.anchors = dr.origAnchors.map(a => ({
-            t: bars[clamp(Math.round(tToIdx(bars, a.t)) + Math.round(dIdx), 0, bars.length - 1)].t,
+            t: idxToT(bars, tToIdx(bars, a.t) + dIdx),
             price: a.price + (vp.priceFromY(py) - dr.grabPrice),
           }));
         }
@@ -355,13 +402,20 @@ function endDrag(e: PointerEvent) {
       }
     }
   }
-  if (drag && drag.kind === "draw") {
+  if (dragActive && drag && drag.kind === "draw") {
     store.commitMove(drag.id, drag.origAnchors);
   }
   drag = null;
+  dragActive = false;
+  pressBox.v = null;
 }
 cv.addEventListener("pointerup", endDrag);
-cv.addEventListener("pointerleave", () => { hover = null; render(); });
+window.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointerleave", () => {
+  hover = null;
+  if (pressBox.v && !dragActive) pressBox.v = null;
+  render();
+});
 
 cv.addEventListener("wheel", (e: WheelEvent) => {
   e.preventDefault();
@@ -408,7 +462,8 @@ function placeTextInput(px: number, py: number) {
   pill.hidden = false;
   pill.style.left = Math.min(px, chartEl.clientWidth - 220) + "px";
   pill.style.top = Math.min(py + 12, chartEl.clientHeight - 40) + "px";
-  field.value = "note";
+  const def0 = TOOLS_BY_TYPE.get(activeTool);
+  field.value = def0?.type === "callout" ? "callout" : def0?.type === "text" ? "text" : "note";
   field.focus(); field.select();
 }
 function commitText() {
@@ -417,7 +472,7 @@ function commitText() {
   const val = ($("textinputfield") as HTMLInputElement).value.trim() || "note";
   const def = TOOLS_BY_TYPE.get(activeTool)!;
   closeTextInput();
-  addDrawing(activeTool, [{ t: tp.t, price: tp.price }], { settings: { ...cloneSettings(def.defaults), text: val } });
+  addDrawing(activeTool, tp.anchors ?? [{ t: tp.t, price: tp.price }], { settings: { ...cloneSettings(def.defaults), text: val } });
 }
 function closeTextInput() {
   $("textinput").hidden = true;
@@ -425,7 +480,17 @@ function closeTextInput() {
 }
 $("textinputok").addEventListener("click", commitText);
 $("textinputfield").addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Enter") { e.preventDefault(); commitText(); }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (flow && flow.type === "polyline" && flow.anchors.length >= 2) {
+      const f = flow;
+      flow = null;
+      addDrawing(f.type, f.anchors);
+      renderModeTip();
+      return;
+    }
+    commitText();
+  }
   if (e.key === "Escape") {
       if (capture) { capture = null; render(); }
       if (flow) { flow = null; render(); }
@@ -556,6 +621,7 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
     if (!$("dlg").hidden) { $("dlg").hidden = true; return; }
     if (capture) { capture = null; render(); return; }
     if (flow) { flow = null; renderModeTip(); render(); return; }
+    if (pressBox.v || dragActive) { pressBox.v = null; drag = null; dragActive = false; render(); return; }
     store.select(null);
     setTool("cross");
     return;

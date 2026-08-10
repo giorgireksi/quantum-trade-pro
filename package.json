@@ -11,7 +11,8 @@
     "p2": "node test/p2.mjs",
     "go": "bash go.sh start",
     "stop": "bash go.sh stop",
-    "toggle": "bash go.sh toggle"
+    "toggle": "bash go.sh toggle",
+    "visual": "node test/visual.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
