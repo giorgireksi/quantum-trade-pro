@@ -3146,35 +3146,83 @@ function getBBox(d){
 function hitTest(d, pt){
   if(d.locked && !State.locked) return false;
 
+  // TradingView-style hit detection with proper distances
+  const LINE_HIT=8;    // 8px for line-based drawings
+  const POINT_HIT=10;  // 10px for point/anchor detection
+  const SHAPE_HIT=10;  // 10px for shape boundaries
+
+  // Horizontal/vertical lines
   if(d.type==='horizontal'){
     const y=mainSeries.priceToCoordinate(d.pt1.price);
-    return y!==null && Math.abs(pt.y-y)<10;
+    return y!==null && Math.abs(pt.y-y)<LINE_HIT;
   }
 
   if(d.type==='vertical'){
     const x=chart.timeScale().timeToCoordinate(d.pt1.time);
-    return x!==null && Math.abs(pt.x-x)<10;
+    return x!==null && Math.abs(pt.x-x)<LINE_HIT;
   }
 
-  const lineTypes=['trendline','ray','extended','parallel','regression','arrow','measure','gannfan','horizontalray','crossline','infoline','trendangle','flatbottom','schiff','gannbox','anchoredvwap','barspattern','price_label','signpost','datepricerange'];
+  // Line-based drawings (trendlines, rays, etc.)
+  const lineTypes=['trendline','ray','extended','parallel','regression','arrow','measure','gannfan','horizontalray','crossline','infoline','trendangle','flatbottom','schiff','gannbox','anchoredvwap','barspattern','price_label','signpost','datepricerange','fibfan','fibarc','fibchannel'];
   if(lineTypes.includes(d.type)){
     const p1=getXY(d.pt1), p2=getXY(d.pt2);
     if(!p1 || !p2) return false;
-    return distToSegment(pt,p1,p2)<10;
+    return distToSegment(pt,p1,p2)<LINE_HIT;
   }
 
-  if(d.type==='polyline' || d.type==='brush'){
+  // Multi-point drawings (polyline, brush, Elliott, patterns)
+  if(d.type==='polyline' || d.type==='brush' || d.type==='path'){
     if(!d.points || d.points.length<2) return false;
     for(let i=0;i<d.points.length-1;i++){
       const a=getXY(d.points[i]), b=getXY(d.points[i+1]);
-      if(a && b && distToSegment(pt,a,b)<10) return true;
+      if(a && b && distToSegment(pt,a,b)<LINE_HIT) return true;
     }
     return false;
   }
 
+  // Pattern drawings (elliott, harmonics, headshoulders)
+  const patternTypes=['elliott','elliottabc','elliottabcde','elliottwxy','cypher','butterfly','bat','crab','threedrives','headshoulders','abcd'];
+  if(patternTypes.includes(d.type)){
+    if(d.points && d.points.length>=2){
+      for(let i=0;i<d.points.length-1;i++){
+        const a=getXY(d.points[i]), b=getXY(d.points[i+1]);
+        if(a && b && distToSegment(pt,a,b)<LINE_HIT) return true;
+      }
+    }
+    // Also check endpoint anchors
+    const p1=getXY(d.pt1), p2=getXY(d.pt2);
+    if(p1 && Math.abs(pt.x-p1.x)<POINT_HIT && Math.abs(pt.y-p1.y)<POINT_HIT) return true;
+    if(p2 && Math.abs(pt.x-p2.x)<POINT_HIT && Math.abs(pt.y-p2.y)<POINT_HIT) return true;
+    return false;
+  }
+
+  // Fib/Gann tools (check both lines and anchors)
+  const fibTypes=['fib','fibext','fibtime','fibcircle','pitchfork'];
+  if(fibTypes.includes(d.type)){
+    const p1=getXY(d.pt1), p2=getXY(d.pt2);
+    if(!p1 || !p2) return false;
+    // Check anchor points first (higher priority)
+    if(Math.abs(pt.x-p1.x)<POINT_HIT && Math.abs(pt.y-p1.y)<POINT_HIT) return true;
+    if(Math.abs(pt.x-p2.x)<POINT_HIT && Math.abs(pt.y-p2.y)<POINT_HIT) return true;
+    // Then check line proximity
+    return distToSegment(pt,p1,p2)<LINE_HIT;
+  }
+
+  // Shape-based drawings (rectangles, ellipses, etc.)
   const bbox=getBBox(d);
   if(!bbox) return false;
-  return pt.x >= bbox.minX-10 && pt.x <= bbox.maxX+10 && pt.y >= bbox.minY-10 && pt.y <= bbox.maxY+10;
+  
+  // For shapes, check if inside or near boundary
+  const inBounds = pt.x >= bbox.minX-SHAPE_HIT && pt.x <= bbox.maxX+SHAPE_HIT && 
+                   pt.y >= bbox.minY-SHAPE_HIT && pt.y <= bbox.maxY+SHAPE_HIT;
+  
+  // For filled shapes, also check if truly inside
+  if(['rectangle','ellipse','triangle','polygon','session','vprofile'].includes(d.type)){
+    return inBounds;
+  }
+  
+  // For unfilled shapes, check boundary proximity
+  return inBounds;
 }
 
 function findDrawingAt(pt){
@@ -3439,13 +3487,27 @@ function updateCursorStyle(pt, hit){
   if(hit){
     const selected = String(hit.id)===String(State.selectedDrawingId);
     if(selected){
-      const anchor=getAnchorAt(hit, pt);
-      layer.style.cursor = anchor ? 'grab' : 'move';
+      // Check if hovering over an anchor point
+      const anchors=getAnchors(hit);
+      const nearAnchor = anchors.some(a => {
+        const xy=getXY(a.pt);
+        return xy && Math.abs(pt.x-xy.x)<10 && Math.abs(pt.y-xy.y)<10;
+      });
+      layer.style.cursor = nearAnchor ? 'grab' : 'move';
     } else {
+      // TradingView-style cursor: pointer for hoverable items
       layer.style.cursor = 'pointer';
     }
   } else {
-    layer.style.cursor = State.activeTool==='select' ? 'default' : 'crosshair';
+    // Default cursors based on tool
+    const cursors={
+      select:'default',
+      cursor:'grab',
+      text:'text',
+      note:'text',
+      eraser:'not-allowed'
+    };
+    layer.style.cursor = cursors[State.activeTool] || 'crosshair';
   }
 }
 
@@ -3773,9 +3835,13 @@ function svgDot(x,y,fill,r=3){
 }
 
 function svgAnchor(x,y,selected=false){
-  const r = selected ? 5 : 4;
-  el('circle',{cx:x,cy:y,r:r+2,fill:'rgba(41,98,255,.2)'});
-  el('circle',{cx:x,cy:y,r,fill:'#fff',stroke:'#2962ff','stroke-width':2});
+  // TradingView-style anchor points: larger, more visible
+  const r = selected ? 6 : 5;           // 12px / 10px diameter
+  const outerR = r + 3;                  // Outer glow radius
+  el('circle',{cx:x,cy:y,r:outerR,fill:'rgba(41,98,255,.15)',stroke:'none'});  // Outer glow
+  el('circle',{cx:x,cy:y,r,fill:selected?'#2962ff':'#fff',stroke:'#2962ff','stroke-width':2.5,'pointer-events':'none'});
+  // Inner dot for precision
+  if(selected) el('circle',{cx:x,cy:y,r:2,fill:'#fff','pointer-events':'none'});
 }
 
 function isDrawingVisibleOnTimeframe(d){
@@ -3824,17 +3890,23 @@ function renderShape(d, isPreview=false){
   const p2=d.pt2?getXY(d.pt2):null;
   const p3=d.pt3?getXY(d.pt3):null;
   
+  // TradingView-style hover highlighting
+  const isHovered = String(d.id)===String(State.hoveredDrawingId);
+  const isSelected = String(d.id)===String(State.selectedDrawingId);
+  const drawWidth = isHovered ? (st.width||1.5)+1 : (st.width||1.5);  // Thicken on hover
+  const drawStroke = isHovered ? '#fff' : (st.stroke||'#2962ff');       // White highlight on hover
+  
   if(d.type==='horizontal'){
     const y=mainSeries.priceToCoordinate(d.pt1.price);
     if(y===null) return;
-    svgLine(0,y,layerW,y,st.stroke,st.width,st.dash);
+    svgLine(0,y,layerW,y,drawStroke,drawWidth,st.dash);
     
     const dec = SYMBOLS[State.currentSymbol]?.decimals || 2;
     const price = d.pt1.price;
     const currentPrice = chartData[chartData.length-1]?.close || price;
     const pct = ((price-currentPrice)/currentPrice)*100;
     const labelText = `${price.toFixed(dec)} · ${pct>=0?'+':''}${pct.toFixed(2)}%`;
-    svgPillLabel(layerW-140, y, labelText, st.stroke);
+    svgPillLabel(layerW-140, y, labelText, drawStroke);
     return;
   }
 
