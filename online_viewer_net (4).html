@@ -2399,7 +2399,7 @@ function initChart(){
     priceFormat:{type:'volume'},
     priceScaleId:''
   });
-  volumeSeries.priceScale().applyOptions({scaleMargins:{top:.85,bottom:0}});
+  volumeSeries.priceScale().applyOptions({scaleMargins:{top:.8,bottom:0}});
 
   chart.subscribeCrosshairMove(handleCrosshair);
   chart.timeScale().subscribeVisibleTimeRangeChange(()=>renderDrawings());
@@ -2643,11 +2643,20 @@ function handleCrosshair(param){
 /* ================= INDICATOR UI ================= */
 
 function toggleIndicator(id){
+  console.log('Toggling indicator:', id, 'Current state:', State.indicators[id]);
   State.indicators[id]=!State.indicators[id];
+  console.log('New state:', State.indicators[id]);
   renderIndicatorsPanel();
   if(State.indicators[id]){
-    applyIndicator(id);
-    showToast(id.toUpperCase()+' enabled','success');
+    console.log('Applying indicator:', id, 'Chart data length:', chartData.length);
+    try {
+      applyIndicator(id);
+      console.log('Indicator applied successfully:', id);
+      showToast(id.toUpperCase()+' enabled','success');
+    } catch(e) {
+      console.error('Error applying indicator:', id, e);
+      showToast('Error: '+e.message,'error');
+    }
   }else{
     removeIndicator(id);
     showToast(id.toUpperCase()+' disabled','warning');
@@ -2662,12 +2671,28 @@ function removeIndicator(id){
 }
 
 function applyIndicator(id){
+  console.log('applyIndicator called:', id);
+  console.log('Chart object:', chart);
+  console.log('Chart available:', !!chart);
   removeIndicator(id);
   const s = State.indicatorSettings[id];
+  console.log('Settings:', s);
+  console.log('Chart data:', chartData?.length, 'bars');
+  
+  if(!chart) {
+    console.error('Chart not initialized!');
+    return;
+  }
+  if(!chartData || chartData.length === 0) {
+    console.error('No chart data!');
+    return;
+  }
 
   if(id==='sma20'){
+    const smaData = calcSMA(chartData, s.period);
+    console.log('SMA data:', smaData?.length, 'points');
     const series=chart.addLineSeries({color:s.color,lineWidth:s.width,title:'SMA '+s.period});
-    series.setData(calcSMA(chartData,s.period));
+    series.setData(smaData);
     indicatorSeries[id]=series;
   }
 
@@ -2688,7 +2713,11 @@ function applyIndicator(id){
 
   if(id==='rsi'){
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'RSI '+s.period,priceScaleId:'rsi'});
-    series.priceScale().applyOptions({scaleMargins:{top:.75,bottom:0}});
+    // Set proper scale margins for RSI (0-100 range)
+    series.priceScale().applyOptions({
+      scaleMargins:{top:.1,bottom:.1},
+      autoScale:true
+    });
     series.setData(calcRSI(chartData,s.period));
     series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
     series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
@@ -2703,7 +2732,10 @@ function applyIndicator(id){
       priceScaleId:'macd',
       priceFormat:{type:'price',precision:4,decimalMove:4}
     });
-    hist.priceScale().applyOptions({scaleMargins:{top:.75,bottom:0}});
+    hist.priceScale().applyOptions({
+      scaleMargins:{top:.1,bottom:.1},
+      autoScale:true
+    });
     // Color histogram bars: green when above 0, red when below
     const histData=m.histogram.map(h=>({
       time:h.time,
@@ -2725,7 +2757,7 @@ function applyIndicator(id){
 
   if(id==='atr'){
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ATR '+s.period,priceScaleId:'atr'});
-    series.priceScale().applyOptions({scaleMargins:{top:.85,bottom:0}});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     series.setData(calcATR(chartData,s.period));
     indicatorSeries[id]=series;
   }
@@ -2733,7 +2765,7 @@ function applyIndicator(id){
   if(id==='stoch'){
     const st=calcStochastic(chartData,s.k,s.d,s.smooth);
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'%K',priceScaleId:'stoch'});
-    kLine.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}});
+    kLine.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     kLine.setData(st.k);
     const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'%D',priceScaleId:'stoch'});
     dLine.setData(st.d);
@@ -2745,7 +2777,7 @@ function applyIndicator(id){
   if(id==='stochrsi'){
     const st=calcStochRSI(chartData,s.rsiPeriod,s.stochPeriod,s.smooth);
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'StochRSI %K',priceScaleId:'stochrsi'});
-    kLine.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}});
+    kLine.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     kLine.setData(st.k);
     const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'StochRSI %D',priceScaleId:'stochrsi'});
     dLine.setData(st.d);
@@ -2765,7 +2797,7 @@ function applyIndicator(id){
 
   if(id==='williams'){
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'Williams %R '+s.period,priceScaleId:'williams'});
-    series.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     series.setData(calcWilliams(chartData,s.period));
     series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
     series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
@@ -2774,7 +2806,7 @@ function applyIndicator(id){
 
   if(id==='mfi'){
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'MFI '+s.period,priceScaleId:'mfi'});
-    series.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     series.setData(calcMFI(chartData,s.period));
     series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
     series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
