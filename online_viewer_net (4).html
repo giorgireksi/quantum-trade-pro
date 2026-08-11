@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Quantum Trade Pro — Ultimate Upgrade</title>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -23,7 +23,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar-thumb:hover{background:var(--border2)}
 .app{
   display:grid;height:100vh;
-  grid-template-rows:48px 38px 1fr 28px;
+  grid-template-rows:48px 38px minmax(0,1fr) 28px;
   grid-template-columns:52px 1fr 300px;
   grid-template-areas:
     "header header header"
@@ -67,7 +67,7 @@ button,input,select,textarea{font:inherit;color:inherit}
   font-size:11px;white-space:nowrap;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,.5);pointer-events:none;font-weight:600
 }
 .tool-divider{width:26px;height:1px;background:var(--border);margin:3px 0}
-.chart-wrap{grid-area:chart;position:relative;background:var(--bg);overflow:hidden}
+.chart-wrap{grid-area:chart;position:relative;background:var(--bg);overflow:hidden;min-height:0}
 #chart,#drawLayer{position:absolute;inset:0}
 
 /* Multi-chart layout */
@@ -92,7 +92,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .loading.hidden{opacity:0;pointer-events:none}
 .spinner{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.right{grid-area:right;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column}
+.right{grid-area:right;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
 .tabs{display:flex;background:var(--panel2);border-bottom:1px solid var(--border)}
 .tab{flex:1;padding:11px 6px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:800;font-size:10px;cursor:pointer;transition:all .15s;text-transform:uppercase;letter-spacing:.5px}
 .tab.active{color:var(--text);border-color:var(--accent);background:var(--panel)}
@@ -2392,6 +2392,20 @@ function initChart(){
     handleScale:true
   });
 
+  // v5 compat shim: restore v4 convenience series methods so the rest of the code is unchanged.
+  // The optional 2nd arg (paneIndex) enables real TradingView-style sub-panes for indicators.
+  {
+    const _defs = {
+      addCandlestickSeries: LightweightCharts.CandlestickSeries,
+      addBarSeries: LightweightCharts.BarSeries,
+      addLineSeries: LightweightCharts.LineSeries,
+      addAreaSeries: LightweightCharts.AreaSeries,
+      addHistogramSeries: LightweightCharts.HistogramSeries,
+      addBaselineSeries: LightweightCharts.BaselineSeries
+    };
+    for(const _n in _defs) chart[_n] = (o, paneIndex) => chart.addSeries(_defs[_n], o, paneIndex);
+  }
+
   createMainSeries();
 
   volumeSeries = chart.addHistogramSeries({
@@ -2666,6 +2680,14 @@ function removeIndicator(id){
   delete indicatorSeries[id];
 }
 
+// TradingView-style sub-panes (Lightweight Charts v5): pane 0 is the main chart.
+// Each separate-pane indicator takes the next free pane; v5 auto-removes empty panes
+// and renumbers the ones below, so panes().length is always the correct next index.
+function nextIndicatorPaneIndex(){
+  try{ return (typeof chart.panes === 'function' && chart.panes().length >= 1) ? chart.panes().length : 1; }
+  catch(e){ return 1; }
+}
+
 function applyIndicator(id){
   removeIndicator(id);
   const s = State.indicatorSettings[id];
@@ -2699,16 +2721,15 @@ function applyIndicator(id){
 
   if(id==='rsi'){
     const rsiData=calcRSI(chartData,s.period);
-    // RSI line - Purple (like TradingView)
-    // Create series with priceScaleId for separate pane
+    // RSI line - Purple (like TradingView), separate pane below the chart
     const series=chart.addLineSeries({
       color:s.color,
       lineWidth:2,
       title:'RSI '+s.period,
       priceScaleId:'rsi'
-    });
-    // Configure the price scale for RSI pane
-    chart.priceScale('rsi').applyOptions({
+    }, nextIndicatorPaneIndex());
+    // Configure the price scale for the RSI pane
+    series.priceScale().applyOptions({
       scaleMargins:{top:0.1, bottom:0.1},
       autoScale:true
     });
@@ -2724,14 +2745,14 @@ function applyIndicator(id){
 
   if(id==='macd'){
     const m=calcMACD(chartData,s.fast,s.slow,s.signal);
-    // Configure the price scale for MACD pane
-    chart.priceScale('macd').applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
-    // MACD Histogram with TradingView colors
+    const pi=nextIndicatorPaneIndex();
+    // MACD Histogram with TradingView colors (separate pane)
     const hist=chart.addHistogramSeries({
       title:'MACD Hist',
       priceScaleId:'macd',
       priceFormat:{type:'price',precision:4,decimalMove:4}
-    });
+    }, pi);
+    hist.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
     // Color histogram bars: green when above 0, red when below (TradingView style)
     const histData=m.histogram.map(h=>({
       time:h.time,
@@ -2740,10 +2761,10 @@ function applyIndicator(id){
     }));
     hist.setData(histData);
     // MACD Line - Blue
-    const macdLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'MACD',priceScaleId:'macd'});
+    const macdLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'MACD',priceScaleId:'macd'}, pi);
     macdLine.setData(m.macd);
     // Signal Line - Orange
-    const sigLine=chart.addLineSeries({color:'#ff9800',lineWidth:2,title:'Signal',priceScaleId:'macd'});
+    const sigLine=chart.addLineSeries({color:'#ff9800',lineWidth:2,title:'Signal',priceScaleId:'macd'}, pi);
     sigLine.setData(m.signal);
     // Zero line - dashed gray
     macdLine.createPriceLine({price:0,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'0'});
@@ -2751,31 +2772,30 @@ function applyIndicator(id){
   }
 
   if(id==='atr'){
-    // Configure the price scale for ATR pane
-    chart.priceScale('atr').applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
-    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ATR '+s.period,priceScaleId:'atr'});
+    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ATR '+s.period,priceScaleId:'atr'}, nextIndicatorPaneIndex());
+    series.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
     series.setData(calcATR(chartData,s.period));
     indicatorSeries[id]=series;
   }
 
   if(id==='stoch'){
     const st=calcStochastic(chartData,s.k,s.d,s.smooth);
-    // Configure the price scale for Stochastic pane
-    chart.priceScale('stoch').applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    // Background shading between 20-80 (TradingView style)
+    const pi=nextIndicatorPaneIndex();
+    // Background shading between 20-80 (TradingView style) - separate pane
     const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
     const bgSeries=chart.addHistogramSeries({
       priceScaleId:'stoch',
       priceFormat:{type:'price'},
       lastValueVisible:false,
       priceLineVisible:false
-    });
+    }, pi);
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
     bgSeries.setData(bgData);
     // %K line - Blue (like TradingView)
-    const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'%K',priceScaleId:'stoch'});
+    const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'%K',priceScaleId:'stoch'}, pi);
     kLine.setData(st.k);
     // %D line - Orange (like TradingView)
-    const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'%D',priceScaleId:'stoch'});
+    const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'%D',priceScaleId:'stoch'}, pi);
     dLine.setData(st.d);
     // Upper level line (80) - dashed
     kLine.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
@@ -2786,22 +2806,22 @@ function applyIndicator(id){
 
   if(id==='stochrsi'){
     const st=calcStochRSI(chartData,s.rsiPeriod,s.stochPeriod,s.smooth);
-    // Configure the price scale for StochRSI pane
-    chart.priceScale('stochrsi').applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    // Background shading between 0.20-0.80 (TradingView style)
+    const pi=nextIndicatorPaneIndex();
+    // Background shading between 0.20-0.80 (TradingView style) - separate pane
     const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
     const bgSeries=chart.addHistogramSeries({
       priceScaleId:'stochrsi',
       priceFormat:{type:'price'},
       lastValueVisible:false,
       priceLineVisible:false
-    });
+    }, pi);
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
     bgSeries.setData(bgData);
     // %K line - Blue
-    const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'StochRSI %K',priceScaleId:'stochrsi'});
+    const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'StochRSI %K',priceScaleId:'stochrsi'}, pi);
     kLine.setData(st.k);
     // %D line - Orange
-    const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'StochRSI %D',priceScaleId:'stochrsi'});
+    const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'StochRSI %D',priceScaleId:'stochrsi'}, pi);
     dLine.setData(st.d);
     // Upper level line (0.80) - dashed gray
     kLine.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
@@ -2812,10 +2832,9 @@ function applyIndicator(id){
 
   if(id==='cci'){
     const cciData=calcCCI(chartData,s.period);
-    // Configure the price scale for CCI pane
-    chart.priceScale('cci').applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
-    // CCI line - Purple
-    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'CCI '+s.period,priceScaleId:'cci'});
+    // CCI line - Purple (separate pane)
+    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'CCI '+s.period,priceScaleId:'cci'}, nextIndicatorPaneIndex());
+    series.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
     series.setData(cciData);
     // Upper level line (+100) - dashed gray
     series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
@@ -2828,19 +2847,19 @@ function applyIndicator(id){
 
   if(id==='williams'){
     const williamsData=calcWilliams(chartData,s.period);
-    // Configure the price scale for Williams %R pane
-    chart.priceScale('williams').applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    // Background shading between -80 to -20 (TradingView style)
+    const pi=nextIndicatorPaneIndex();
+    // Background shading between -80 to -20 (TradingView style) - separate pane
     const bgData=williamsData.map(d=>({time:d.time, value:-20, color:'rgba(41,98,255,.08)'}));
     const bgSeries=chart.addHistogramSeries({
       priceScaleId:'williams',
       priceFormat:{type:'price'},
       lastValueVisible:false,
       priceLineVisible:false
-    });
+    }, pi);
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
     bgSeries.setData(bgData);
     // Williams %R line - Purple
-    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'Williams %R '+s.period,priceScaleId:'williams'});
+    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'Williams %R '+s.period,priceScaleId:'williams'}, pi);
     series.setData(williamsData);
     // Upper level line (-20) - dashed gray
     series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
@@ -2851,10 +2870,9 @@ function applyIndicator(id){
 
   if(id==='mfi'){
     const mfiData=calcMFI(chartData,s.period);
-    // Configure the price scale for MFI pane
-    chart.priceScale('mfi').applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    // MFI line - Purple
-    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'MFI '+s.period,priceScaleId:'mfi'});
+    // MFI line - Purple (separate pane)
+    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'MFI '+s.period,priceScaleId:'mfi'}, nextIndicatorPaneIndex());
+    series.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
     series.setData(mfiData);
     // Upper level line (80) - dashed gray
     series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
@@ -2865,10 +2883,9 @@ function applyIndicator(id){
 
   if(id==='adx'){
     const adxData=calcADX(chartData,s.period);
-    // Configure the price scale for ADX pane
-    chart.priceScale('adx').applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
-    // ADX line - Orange
-    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ADX '+s.period,priceScaleId:'adx'});
+    // ADX line - Orange (separate pane)
+    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ADX '+s.period,priceScaleId:'adx'}, nextIndicatorPaneIndex());
+    series.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
     series.setData(adxData);
     // Level 20 line - dashed gray (weak trend)
     series.createPriceLine({price:20,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'20'});
@@ -2878,9 +2895,8 @@ function applyIndicator(id){
   }
 
   if(id==='obv'){
-    // Configure the price scale for OBV pane
-    chart.priceScale('obv').applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
-    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'OBV',priceScaleId:'obv'});
+    const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'OBV',priceScaleId:'obv'}, nextIndicatorPaneIndex());
+    series.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.1}, autoScale:true});
     series.setData(calcOBV(chartData));
     indicatorSeries[id]=series;
   }
