@@ -245,6 +245,14 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
 .import-hint summary{cursor:pointer;font-weight:600;color:var(--text2)}
 .hint-code{font-family:"JetBrains Mono",monospace;font-size:10.5px;line-height:1.55;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin:8px 0;white-space:pre-wrap;max-height:180px;overflow:auto;color:var(--muted)}
 .indicator-settings-dynamic{display:grid;gap:10px}
+.cind-empty{text-align:center;padding:26px 14px;border:1px dashed var(--border);border-radius:12px;margin:4px}
+.cind-hint{font-size:10px;color:var(--muted);margin:12px 4px 4px;line-height:1.5}
+.cind-chip{font-size:9px;padding:2px 7px;border-radius:999px;font-weight:800;flex-shrink:0}
+.chip-on{color:var(--green);background:rgba(38,166,154,.14)}
+.chip-off{color:var(--muted);background:var(--panel3)}
+.chip-err{color:var(--red);background:rgba(239,83,80,.14);cursor:pointer}
+.cind-row.confirming{border-color:var(--red);background:rgba(239,83,80,.07)}
+.cind-confirm{flex:1;color:var(--red);font-size:10.5px;line-height:1.4}
 .indicator-item.has-error{border-color:var(--red)}
 .err-badge{color:var(--red);background:rgba(239,83,80,.12)}
 .err-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
@@ -1953,18 +1961,20 @@ function renderTools(){
 }
 
 function renderTabs(){
-  $('#tabs').innerHTML = ['indicators','watchlist','drawings','alerts','objecttree'].map((t,i)=>`<button class="tab ${i===0?'active':''}" data-tab="${t}">${t==='objecttree'?'Objects':t[0].toUpperCase()+t.slice(1)}</button>`).join('');
+  $('#tabs').innerHTML = ['indicators','custom','watchlist','drawings','alerts','objecttree'].map((t,i)=>`<button class="tab ${i===0?'active':''}" data-tab="${t}">${t==='objecttree'?'Objects':t[0].toUpperCase()+t.slice(1)}</button>`).join('');
 }
 
 function renderRight(){
   $('#rightContent').innerHTML = `
     <div class="tab-panel" id="panel-indicators"></div>
+    <div class="tab-panel" id="panel-custom"></div>
     <div class="tab-panel" id="panel-watchlist"></div>
     <div class="tab-panel" id="panel-drawings"></div>
     <div class="tab-panel" id="panel-alerts"></div>
     <div class="tab-panel" id="panel-objecttree"></div>
   `;
   renderIndicatorsPanel();
+  renderCustomIndicatorsPanel();
   renderWatchlist();
   renderDrawingsPanel();
   renderAlertsPanel();
@@ -1991,18 +2001,11 @@ function renderIndicatorsPanel(){
   `).join('');
 
   if(State.customIndicators.length){
-    html += `<div class="section-title">Custom (imported)</div>` + State.customIndicators.map(ci => `
-      <div class="indicator-item ${State.indicators[ci.id]!==false?'active':''}${indicatorErrors[ci.id]?' has-error':''}" data-cind="${ci.id}">
-        <div class="toggle ${State.indicators[ci.id]!==false?'on':''}"></div>
-        <div class="meta">
-          <div class="name">${ci.name}</div>
-          <div class="desc">${(ci.settingsSchema||[]).length} setting(s)</div>
-        </div>
-        ${indicatorErrors[ci.id]?`<button class="icon-btn small err-badge" data-cind-err="${ci.id}" title="Error">⚠</button>`:''}
-        <button class="icon-btn small" data-cind-set="${ci.id}" title="Settings">⚙</button>
-        <button class="icon-btn small danger" data-cind-del="${ci.id}" title="Remove">✕</button>
-      </div>
-    `).join('');
+    html += `<div class="section-title">Custom Indicators</div>
+      <div class="indicator-item" data-goto-custom style="cursor:pointer">
+        <div class="meta"><div class="name">${State.customIndicators.length} imported</div><div class="desc">Open the Custom tab to manage them</div></div>
+        <span style="color:var(--muted)">→</span>
+      </div>`;
   }
 
   html += `<div class="section-title">Indicator on Indicator</div>
@@ -2029,6 +2032,57 @@ function renderIndicatorsPanel(){
         </div>
       </div>
     `).join("")}`;
+
+  // The dedicated Custom tab owns custom-indicator management.
+  renderCustomIndicatorsPanel();
+}
+
+// ===== Dedicated Custom Indicators manager (separate tab, professional UI) =====
+let confirmingRemoveId = null;   // 2-step removal: id awaiting confirmation
+let confirmTimer = null;
+function renderCustomIndicatorsPanel(){
+  const panel = $('#panel-custom');
+  if(!panel) return;
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin:10px 4px 7px">
+      <div class="section-title" style="margin:0">Custom Indicators</div>
+      <button class="btn small" data-custom-import>🧩 Import</button>
+    </div>`;
+  if(!State.customIndicators.length){
+    html += `<div class="cind-empty">
+        <div style="font-size:26px;margin-bottom:8px">🧩</div>
+        <div class="name">No custom indicators yet</div>
+        <div class="desc" style="margin:5px 0 12px;color:var(--muted);font-size:10.5px;line-height:1.5">Paste TradingView PineScript into your LLM,<br>get JavaScript via the indicator contract, import it here.</div>
+        <button class="btn primary" data-custom-import>🧩 Import Indicator</button>
+      </div>`;
+  }else{
+    State.customIndicators.forEach(ci => {
+      const on = State.indicators[ci.id] !== false;
+      const err = indicatorErrors[ci.id];
+      const chip = err
+        ? `<span class="cind-chip chip-err" data-cind-err="${ci.id}" title="View error">⚠ Error</span>`
+        : on
+          ? '<span class="cind-chip chip-on">Active</span>'
+          : '<span class="cind-chip chip-off">Off</span>';
+      const seriesCount = (customIndicatorSeries[ci.id] || []).length;
+      html += `<div class="indicator-item cind-row ${on?'active':''}${err?' has-error':''}${confirmingRemoveId===ci.id?' confirming':''}" data-cind="${ci.id}">
+        ${confirmingRemoveId===ci.id ? `
+          <div class="cind-confirm">Remove <b>${escapeHTML(ci.name)}</b>?<br><span style="font-weight:500">This can't be undone.</span></div>
+          <button class="icon-btn small danger" data-cind-del-yes="${ci.id}" title="Confirm removal">✓ Remove</button>
+          <button class="icon-btn small" data-cind-del-no="${ci.id}" title="Cancel">✕</button>` : `
+          <div class="toggle ${on?'on':''}"></div>
+          <div class="meta">
+            <div class="name">${escapeHTML(ci.name)}</div>
+            <div class="desc">${(ci.settingsSchema||[]).length} setting(s) · ${seriesCount} series</div>
+            ${err ? `<div class="desc" style="color:var(--red)">Line ${err.line || '?'}: ${escapeHTML(String(err.message).slice(0, 90))}</div>` : ''}
+          </div>
+          ${chip}
+          <button class="icon-btn small" data-cind-set="${ci.id}" title="Settings">⚙</button>
+          <button class="icon-btn small danger" data-cind-del="${ci.id}" title="Remove">✕</button>`}
+      </div>`;
+    });
+  }
+  html += `<div class="cind-hint">Toggle an indicator off to hide it without removing it. Removal is intentionally confirmed in two steps.</div>`;
+  panel.innerHTML = html;
 }
 
 function renderWatchlist(){
@@ -6103,7 +6157,11 @@ function bindEvents(){
     if(e.target.closest('#importIndicatorBtn')){ openModal('importIndicatorModal'); return; }
 
     const tab=e.target.closest('.tab');
-    if(tab) return switchTab(tab.dataset.tab);
+    if(tab){
+      // Switching away cancels any pending removal confirmation.
+      if(confirmingRemoveId){ confirmingRemoveId=null; clearTimeout(confirmTimer); renderIndicatorsPanel(); }
+      return switchTab(tab.dataset.tab);
+    }
 
     const indSet=e.target.closest('[data-ind-set]');
     if(indSet) return openIndicatorSettings(indSet.dataset.indSet);
@@ -6117,8 +6175,29 @@ function bindEvents(){
     if(indErr) return showIndicatorError(indErr.dataset.indErr);
     const cindSet=e.target.closest('[data-cind-set]');
     if(cindSet) return openCustomIndicatorSettings(cindSet.dataset.cindSet);
-    const cindDel=e.target.closest('[data-cind-del]');
-    if(cindDel) return removeCustomIndicator(cindDel.dataset.cindDel);
+    // 2-step removal: first click arms the confirm row, second confirms
+    const cYes=e.target.closest('[data-cind-del-yes]');
+    if(cYes){ removeCustomIndicator(cYes.dataset.cindDelYes); confirmingRemoveId=null; clearTimeout(confirmTimer); renderIndicatorsPanel(); return; }
+    const cNo=e.target.closest('[data-cind-del-no]');
+    if(cNo){ confirmingRemoveId=null; clearTimeout(confirmTimer); renderIndicatorsPanel(); return; }
+    const cDel=e.target.closest('[data-cind-del]');
+    if(cDel){
+      if(confirmingRemoveId !== cDel.dataset.cindDel){
+        confirmingRemoveId=cDel.dataset.cindDel;
+        clearTimeout(confirmTimer);
+        confirmTimer=setTimeout(()=>{ confirmingRemoveId=null; renderIndicatorsPanel(); }, 6000);
+      }
+      renderIndicatorsPanel();
+      return;
+    }
+    const cimp=e.target.closest('[data-custom-import]');
+    if(cimp) return openModal('importIndicatorModal');
+    const gotoCustom=e.target.closest('[data-goto-custom]');
+    if(gotoCustom){ switchTab('custom'); return; }
+    // Any other click while a removal is pending cancels it (keeps accidental clicks safe)
+    if(confirmingRemoveId){
+      confirmingRemoveId=null; clearTimeout(confirmTimer); renderIndicatorsPanel();
+    }
     const cind=e.target.closest('[data-cind]');
     if(cind) return toggleCustomIndicator(cind.dataset.cind);
 
