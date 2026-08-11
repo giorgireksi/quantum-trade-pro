@@ -163,9 +163,11 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
 .context-menu-item.danger{color:var(--red)}
 .context-menu-item.danger:hover{background:rgba(239,83,80,.15)}
 .context-divider{height:1px;background:var(--border);margin:4px 2px}
-.float-toolbar{position:fixed;z-index:1500;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:6px;display:flex;gap:4px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.float-toolbar{position:fixed;z-index:1500;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:6px;display:flex;gap:4px;box-shadow:0 8px 24px rgba(0,0,0,.5);cursor:grab}
+.float-toolbar:active{cursor:grabbing}
 .float-toolbar button{width:30px;height:30px;border-radius:7px;background:var(--panel3);border:1px solid var(--border);color:var(--muted);cursor:pointer;display:grid;place-items:center;transition:all .15s}
 .float-toolbar button:hover{background:var(--border);color:var(--text)}
+.color-swatch{border-radius:50%!important;width:24px!important;height:24px!important}
 .color-swatch{width:24px;height:24px;border-radius:6px;border:2px solid var(--border);cursor:pointer;transition:all .15s}
 .color-swatch:hover,.color-swatch.active{border-color:var(--text);transform:scale(1.1)}
 @media(max-width:1100px){
@@ -3682,8 +3684,38 @@ function showFloatToolbar(cx, cy, d){
     <button data-float="delete" title="Delete" style="color:var(--red)">🗑</button>
   `;
   
-  tb.style.left = Math.min(cx + 16, window.innerWidth - 300) + 'px';
-  tb.style.top = Math.max(cy - 50, 10) + 'px';
+  // TradingView-style positioning: above the drawing, centered
+  const tbWidth = 280;  // Approximate toolbar width
+  const tbHeight = 36;  // Approximate toolbar height
+  const padding = 12;   // Distance from drawing
+  
+  // Get drawing bounds for better positioning
+  const bbox = getBBox(d);
+  let left, top;
+  
+  if(bbox) {
+    // Center horizontally on drawing bounding box
+    const centerX = (bbox.minX + bbox.maxX) / 2;
+    left = centerX - (tbWidth / 2);
+    // Position above the drawing
+    top = bbox.minY - tbHeight - padding;
+  } else {
+    // Fallback: position near click point
+    left = cx - (tbWidth / 2);
+    top = cy - tbHeight - padding;
+  }
+  
+  // Keep within viewport bounds
+  left = Math.max(10, Math.min(left, window.innerWidth - tbWidth - 10));
+  top = Math.max(10, top);  // Keep below top edge
+  
+  // If would go above screen, show below instead
+  if(top < 10) {
+    top = (bbox ? bbox.maxY : cy) + padding;
+  }
+  
+  tb.style.left = left + 'px';
+  tb.style.top = top + 'px';
   tb.style.display = 'flex';
   tb.dataset.drawingId = String(d.id);
 }
@@ -3691,6 +3723,36 @@ function showFloatToolbar(cx, cy, d){
 function hideFloatToolbar(){
   $('#floatToolbar').style.display='none';
 }
+
+// Make float toolbar draggable (TradingView-style)
+let floatDragState = null;
+
+document.addEventListener('mousedown', e => {
+  const tb = e.target.closest('#floatToolbar');
+  if(!tb) return;
+  // Only start drag if clicking on empty area (not buttons)
+  if(e.target.closest('button')) return;
+  floatDragState = {
+    startX: e.clientX,
+    startY: e.clientY,
+    startLeft: parseInt(tb.style.left) || 0,
+    startTop: parseInt(tb.style.top) || 0
+  };
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', e => {
+  if(!floatDragState) return;
+  const tb = $('#floatToolbar');
+  const dx = e.clientX - floatDragState.startX;
+  const dy = e.clientY - floatDragState.startY;
+  tb.style.left = (floatDragState.startLeft + dx) + 'px';
+  tb.style.top = (floatDragState.startTop + dy) + 'px';
+});
+
+document.addEventListener('mouseup', () => {
+  floatDragState = null;
+});
 
 /* ================= STYLE MODAL ================= */
 
