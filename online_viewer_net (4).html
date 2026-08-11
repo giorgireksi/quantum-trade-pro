@@ -517,7 +517,10 @@ const CHART_TYPES = [
   {id:'line', tip:'Line', icon:'<path d="M3 17l5-6 5 4 8-9"/>'},
   {id:'area', tip:'Area', icon:'<path d="M3 17l5-6 5 4 8-9v11H3z"/>'},
   {id:'hollow', tip:'Hollow Candles', icon:'<rect x="4" y="6" width="4" height="12" fill="none" stroke="currentColor"/><rect x="10" y="9" width="4" height="6" fill="currentColor"/><rect x="16" y="7" width="4" height="10" fill="none" stroke="currentColor"/>'},
-  {id:'heikin', tip:'Heikin Ashi', icon:'<path d="M4 6v12M10 9v6M16 8v8M20 5v14" stroke-dasharray="2 1"/>'}
+  {id:'heikin', tip:'Heikin Ashi', icon:'<path d="M4 6v12M10 9v6M16 8v8M20 5v14" stroke-dasharray="2 1"/>'},
+  {id:'renko', tip:'Renko', icon:'<rect x="4" y="14" width="4" height="4"/><rect x="8" y="10" width="4" height="4"/><rect x="12" y="6" width="4" height="4"/><rect x="16" y="2" width="4" height="4"/>'},
+  {id:'kagi', tip:'Kagi', icon:'<path d="M4 16h4v-8h4v12h4v-16h4" fill="none"/>'},
+  {id:'pnf', tip:'Point & Figure', icon:'<rect x="4" y="4" width="4" height="4"/><rect x="12" y="4" width="4" height="4"/><rect x="4" y="12" width="4" height="4"/><rect x="12" y="12" width="4" height="4"/><rect x="8" y="8" width="4" height="4"/><rect x="16" y="8" width="4" height="4"/>'}
 ];
 
 const TOOLS = [
@@ -667,6 +670,7 @@ const State = {
   locked:false,
   magnet:true,
   selectedDrawingId:null,
+  selectedDrawingIds:[],
   hoveredDrawingId:null,
   indicators:{sma20:false, ema50:false, bb:false, ichimoku:false, supertrend:false, keltner:false, parabolic:false, adx:false, rsi:false, stoch:false, stochrsi:false, macd:false, cci:false, williams:false, mfi:false, obv:false, vwap:false, hist:false, atr:false, dc:false},
   indicatorSettings:{
@@ -1472,6 +1476,17 @@ function toggleCustomIndicator(id){
   renderIndicatorsPanel();
 }
 
+function toggleIndicatorOnIndicator(type){
+  const key='ioi_'+type;
+  State.indicators[key]=State.indicators[key]===false;
+  if(State.indicators[key]){
+    showToast('Indicator on Indicator enabled: '+type,'success');
+  }else{
+    showToast('Indicator on Indicator disabled: '+type,'info');
+  }
+  renderIndicatorsPanel();
+}
+
 function removeCustomIndicator(id){
   const ci = State.customIndicators.find(x => x.id === id);
   if(!ci) return;
@@ -1585,6 +1600,20 @@ function renderIndicatorsPanel(){
       </div>
     `).join('');
   }
+
+  html += `<div class="section-title">Indicator on Indicator</div>
+    <div class="indicator-item" data-ioi="sma_on_rsi">
+      <div class="toggle on"></div>
+      <div class="meta"><div class="name">SMA on RSI</div><div class="desc">Apply SMA to RSI output</div></div>
+    </div>
+    <div class="indicator-item" data-ioi="ema_on_stoch">
+      <div class="toggle on"></div>
+      <div class="meta"><div class="name">EMA on Stochastic</div><div class="desc">Apply EMA to Stoch %K</div></div>
+    </div>
+    <div class="indicator-item" data-ioi="bb_on_rsi">
+      <div class="toggle on"></div>
+      <div class="meta"><div class="name">Bollinger on RSI</div><div class="desc">Bollinger Bands on RSI</div></div>
+    </div>`;
 
   $('#panel-indicators').innerHTML = html;
 }
@@ -1742,6 +1771,8 @@ function renderObjectTree(){
       <button class="btn small" onclick="State.drawings.forEach(d=>d.visible=true);renderObjectTree();renderDrawings();">Show All</button>
       <button class="btn small" onclick="State.drawings.forEach(d=>d.visible=false);renderObjectTree();renderDrawings();">Hide All</button>
       <button class="btn small danger" onclick="if(confirm('Delete all?')){State.drawings=[];State.selectedDrawingId=null;renderObjectTree();renderDrawings();renderDrawingsPanel();}">Delete All</button>
+      <button class="btn small" onclick="sortDrawings('type')">Sort Type</button>
+      <button class="btn small" onclick="sortDrawings('date')">Sort Date</button>
     </div>` : ''}
   `;
 
@@ -2334,6 +2365,69 @@ function transformHeikinAshi(data){
   return result;
 }
 
+function transformRenko(data,brickSize){
+  if(!data.length) return [];
+  brickSize=brickSize||data[0].close*0.02;
+  const result=[];
+  let lastClose=data[0].close;
+  let lastBrick=Math.floor(lastClose/brickSize)*brickSize;
+  let time=data[0].time;
+  data.forEach(d=>{
+    while(d.close>lastBrick+brickSize){
+      lastBrick+=brickSize;
+      result.push({time:time++,open:lastBrick-brickSize,high:lastBrick,low:lastBrick-brickSize,close:lastBrick,volume:0});
+    }
+    while(d.close<lastBrick){
+      lastBrick-=brickSize;
+      result.push({time:time++,open:lastBrick+brickSize,high:lastBrick+brickSize,low:lastBrick,close:lastBrick,volume:0});
+    }
+  });
+  return result;
+}
+
+function transformKagi(data,reversal){
+  if(!data.length) return [];
+  reversal=reversal||data[0].close*0.04;
+  const result=[];
+  let direction='up';
+  let lastHigh=data[0].high;
+  let lastLow=data[0].low;
+  let pivot=data[0].close;
+  let time=0;
+  data.forEach(d=>{
+    if(direction==='up'){
+      if(d.high>lastHigh){lastHigh=d.high;}
+      if(d.high<pivot-reversal){direction='down';lastLow=d.low;}
+    }else{
+      if(d.low<lastLow){lastLow=d.low;}
+      if(d.low>pivot+reversal){direction='up';lastHigh=d.high;}
+    }
+    pivot=d.close;
+    result.push({time:time++,open:direction==='up'?lastLow:lastHigh,high:lastHigh,low:lastLow,close:d.close,volume:0});
+  });
+  return result;
+}
+
+function transformPnF(data,boxSize){
+  if(!data.length) return [];
+  boxSize=boxSize||data[0].close*0.02;
+  const result=[];
+  let direction='up';
+  let lastX=data[0].close;
+  let time=0;
+  let cols=0;
+  data.forEach(d=>{
+    if(direction==='up'){
+      while(d.close>lastX+boxSize){lastX+=boxSize;cols++;result.push({time:time++,open:lastX-boxSize,high:lastX,low:lastX-boxSize,close:lastX,volume:0,direction:'X'});}
+      if(d.close<lastX-boxSize*3){direction='down';}
+    }else{
+      while(d.close<lastX){lastX-=boxSize;cols++;result.push({time:time++,open:lastX+boxSize,high:lastX+boxSize,low:lastX,close:lastX,volume:0,direction:'O'});}
+      if(d.close>lastX+boxSize*3){direction='up';}
+    }
+  });
+  return result;
+}
+
 function loadSymbol(symbol){
   State.currentSymbol=symbol;
   State.selectedDrawingId=null;
@@ -2373,10 +2467,16 @@ function loadSymbol(symbol){
     let displayData = chartData;
     if(State.chartType==='heikin'){
       displayData = transformHeikinAshi(chartData);
+    } else if(State.chartType==='renko'){
+      displayData = transformRenko(chartData);
+    } else if(State.chartType==='kagi'){
+      displayData = transformKagi(chartData);
+    } else if(State.chartType==='pnf'){
+      displayData = transformPnF(chartData);
     }
 
     const seriesData = displayData.map(d=>{
-      if(State.chartType==='candles'||State.chartType==='hollow'||State.chartType==='heikin'||State.chartType==='bars'){
+      if(State.chartType==='candles'||State.chartType==='hollow'||State.chartType==='heikin'||State.chartType==='bars'||State.chartType==='renko'||State.chartType==='kagi'||State.chartType==='pnf'){
         return {time:d.time, open:d.open, high:d.high, low:d.low, close:d.close};
       }
       return {time:d.time, value:d.close};
@@ -2832,6 +2932,17 @@ function addDrawing(d){
   renderDrawings();
   renderDrawingsPanel();
   showToast(`${d.type.replace('pos',' position')} added`,'success');
+}
+
+function sortDrawings(by){
+  if(by==='type'){
+    State.drawings.sort((a,b)=>a.type.localeCompare(b.type));
+  }else if(by==='date'){
+    State.drawings.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  }
+  renderObjectTree();
+  renderDrawingsPanel();
+  showToast('Drawings sorted by '+by,'info');
 }
 
 function deleteDrawing(id){
@@ -4596,6 +4707,16 @@ function renderAlertModal(){
         </select>
       </div>
     </div>
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label class="label">Webhook URL (optional)</label>
+        <input type="text" class="input" id="alertWebhook" placeholder="https://example.com/webhook">
+      </div>
+      <div>
+        <label class="label">Alert Name</label>
+        <input type="text" class="input" id="alertName" placeholder="Optional name">
+      </div>
+    </div>
     <label class="label">Alert Name (optional)</label>
     <input type="text" class="input" id="alertName" placeholder="e.g. BTC breakout level">
     <div style="margin-top:12px">
@@ -4624,6 +4745,7 @@ function addAlert(){
   const freq=$('#alertFreq')?.value||'once';
   const expiry=$('#alertExpiry')?.value||'none';
   const name=$('#alertName')?.value||'';
+  const webhook=$('#alertWebhook')?.value||'';
   if(isNaN(price)){
     showToast('Invalid alert price','error');
     return;
@@ -4638,6 +4760,7 @@ function addAlert(){
     freq,
     expiry,
     name,
+    webhook,
     createdAt:Date.now(),
     lastTriggeredBar:0
   });
@@ -4688,6 +4811,21 @@ function checkAlerts(lastPrice){
       changed=true;
       const dec=SYMBOLS[State.currentSymbol]?.decimals||2;
       showToast(`🔔 ${a.name?a.name+': ':''}${a.symbol} ${a.condition.replace('_',' ')} ${a.price.toFixed(dec)}`,'warning');
+      // Send webhook if configured
+      if(a.webhook){
+        fetch(a.webhook,{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            symbol:a.symbol,
+            condition:a.condition,
+            price:a.price,
+            name:a.name,
+            timestamp:Date.now(),
+            message:`${a.symbol} ${a.condition.replace('_',' ')} ${a.price.toFixed(dec)}`
+          })
+        }).catch(()=>showToast('Webhook failed','error'));
+      }
     }
   });
   if(changed){
@@ -4938,6 +5076,9 @@ function bindEvents(){
     const cind=e.target.closest('[data-cind]');
     if(cind) return toggleCustomIndicator(cind.dataset.cind);
 
+    const ioi=e.target.closest('[data-ioi]');
+    if(ioi) return toggleIndicatorOnIndicator(ioi.dataset.ioi);
+
     const sym=e.target.closest('[data-symbol]');
     if(sym){
       loadSymbol(sym.dataset.symbol);
@@ -4950,7 +5091,20 @@ function bindEvents(){
 
     const selectDrawing=e.target.closest('[data-select-drawing]');
     if(selectDrawing){
-      State.selectedDrawingId=selectDrawing.dataset.selectDrawing;
+      const id=selectDrawing.dataset.selectDrawing;
+      if(e.shiftKey){
+        // Multi-select with Shift
+        const idx=State.selectedDrawingIds.indexOf(id);
+        if(idx>=0){
+          State.selectedDrawingIds.splice(idx,1);
+        }else{
+          State.selectedDrawingIds.push(id);
+        }
+        State.selectedDrawingId=id;
+      }else{
+        State.selectedDrawingId=id;
+        State.selectedDrawingIds=[id];
+      }
       setTool('select');
       renderDrawings();
       renderDrawingsPanel();
@@ -5411,6 +5565,9 @@ function liveUpdate(){
     const prevHA = chartData.length>1 ? transformHeikinAshi(chartData.slice(-2))[1] : null;
     const haOpen = prevHA ? (prevHA.open+prevHA.close)/2 : (last.open+last.close)/2;
     mainSeries.update({time:last.time, open:haOpen, high:Math.max(last.high,haOpen,haClose), low:Math.min(last.low,haOpen,haClose), close:haClose});
+  }else if(State.chartType==='renko'||State.chartType==='kagi'||State.chartType==='pnf'){
+    // Simplified update for range-based charts
+    mainSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
   }else{
     mainSeries.update({time:last.time, open:last.open, high:last.high, low:last.low, close:last.close});
   }
