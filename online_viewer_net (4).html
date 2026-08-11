@@ -4367,7 +4367,7 @@ function checkAlerts(lastPrice){
     // Handle expiry
     if(a.expiry && a.expiry!=='none' && a.createdAt){
       const elapsed=Date.now()-a.createdAt;
-      const limits={1d:86400000,1w:604800000,1m:2592000000};
+      const limits={'1d':86400000,'1w':604800000,'1m':2592000000};
       if(elapsed>limits[a.expiry]){a.enabled=false;return;}
     }
 
