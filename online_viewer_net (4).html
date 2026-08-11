@@ -2643,15 +2643,11 @@ function handleCrosshair(param){
 /* ================= INDICATOR UI ================= */
 
 function toggleIndicator(id){
-  console.log('Toggling indicator:', id, 'Current state:', State.indicators[id]);
   State.indicators[id]=!State.indicators[id];
-  console.log('New state:', State.indicators[id]);
   renderIndicatorsPanel();
   if(State.indicators[id]){
-    console.log('Applying indicator:', id, 'Chart data length:', chartData.length);
     try {
       applyIndicator(id);
-      console.log('Indicator applied successfully:', id);
       showToast(id.toUpperCase()+' enabled','success');
     } catch(e) {
       console.error('Error applying indicator:', id, e);
@@ -2671,18 +2667,10 @@ function removeIndicator(id){
 }
 
 function applyIndicator(id){
-  console.log('applyIndicator called:', id);
   removeIndicator(id);
   const s = State.indicatorSettings[id];
   
-  if(!chart) {
-    console.error('Chart not initialized!');
-    return;
-  }
-  if(!chartData || chartData.length === 0) {
-    console.error('No chart data!');
-    return;
-  }
+  if(!chart || !chartData || chartData.length === 0) return;
 
   // ==================== OVERLAY INDICATORS (on main chart) ====================
   // These indicators share the price axis and display on the main chart
@@ -2710,15 +2698,17 @@ function applyIndicator(id){
   }
 
   if(id==='rsi'){
+    const rsiData=calcRSI(chartData,s.period);
+    // RSI line - Purple (like TradingView)
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'RSI '+s.period,priceScaleId:'rsi'});
-    // Set proper scale margins for RSI (0-100 range)
-    series.priceScale().applyOptions({
-      scaleMargins:{top:.1,bottom:.1},
-      autoScale:true
-    });
-    series.setData(calcRSI(chartData,s.period));
-    series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    series.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}, autoScale:true});
+    series.setData(rsiData);
+    // Upper level line (70) - dashed gray
+    series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (30) - dashed gray
+    series.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    // Middle line (50) - dashed gray
+    series.createPriceLine({price:50,color:'rgba(120,123,134,.3)',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'50'});
     indicatorSeries[id]=series;
   }
 
@@ -2730,26 +2720,22 @@ function applyIndicator(id){
       priceScaleId:'macd',
       priceFormat:{type:'price',precision:4,decimalMove:4}
     });
-    hist.priceScale().applyOptions({
-      scaleMargins:{top:.1,bottom:.1},
-      autoScale:true
-    });
-    // Color histogram bars: green when above 0, red when below
+    hist.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
+    // Color histogram bars: green when above 0, red when below (TradingView style)
     const histData=m.histogram.map(h=>({
       time:h.time,
       value:h.value,
       color:h.value>=0?'rgba(38,166,154,.7)':'rgba(239,83,80,.7)'
     }));
     hist.setData(histData);
-
     // MACD Line - Blue
     const macdLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'MACD',priceScaleId:'macd'});
     macdLine.setData(m.macd);
-
     // Signal Line - Orange
     const sigLine=chart.addLineSeries({color:'#ff9800',lineWidth:2,title:'Signal',priceScaleId:'macd'});
     sigLine.setData(m.signal);
-
+    // Zero line - dashed gray
+    macdLine.createPriceLine({price:0,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'0'});
     indicatorSeries[id]=[hist,macdLine,sigLine];
   }
 
@@ -2762,59 +2748,114 @@ function applyIndicator(id){
 
   if(id==='stoch'){
     const st=calcStochastic(chartData,s.k,s.d,s.smooth);
+    // Background shading between 20-80 (TradingView style)
+    const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
+    const bgSeries=chart.addHistogramSeries({
+      priceScaleId:'stoch',
+      priceFormat:{type:'price'},
+      lastValueVisible:false,
+      priceLineVisible:false
+    });
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}, autoScale:true});
+    bgSeries.setData(bgData);
+    // %K line - Blue (like TradingView)
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'%K',priceScaleId:'stoch'});
-    kLine.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     kLine.setData(st.k);
+    // %D line - Orange (like TradingView)
     const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'%D',priceScaleId:'stoch'});
     dLine.setData(st.d);
-    kLine.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    kLine.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
-    indicatorSeries[id]=[kLine,dLine];
+    // Upper level line (80) - dashed
+    kLine.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (20) - dashed
+    kLine.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    indicatorSeries[id]=[bgSeries,kLine,dLine];
   }
 
   if(id==='stochrsi'){
     const st=calcStochRSI(chartData,s.rsiPeriod,s.stochPeriod,s.smooth);
+    // Background shading between 0.20-0.80 (TradingView style)
+    const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
+    const bgSeries=chart.addHistogramSeries({
+      priceScaleId:'stochrsi',
+      priceFormat:{type:'price'},
+      lastValueVisible:false,
+      priceLineVisible:false
+    });
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}, autoScale:true});
+    bgSeries.setData(bgData);
+    // %K line - Blue
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'StochRSI %K',priceScaleId:'stochrsi'});
-    kLine.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     kLine.setData(st.k);
+    // %D line - Orange
     const dLine=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:'StochRSI %D',priceScaleId:'stochrsi'});
     dLine.setData(st.d);
-    kLine.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    kLine.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
-    indicatorSeries[id]=[kLine,dLine];
+    // Upper level line (0.80) - dashed gray
+    kLine.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (0.20) - dashed gray
+    kLine.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    indicatorSeries[id]=[bgSeries,kLine,dLine];
   }
 
   if(id==='cci'){
+    const cciData=calcCCI(chartData,s.period);
+    // CCI line - Purple
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'CCI '+s.period,priceScaleId:'cci'});
-    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}});
-    series.setData(calcCCI(chartData,s.period));
-    series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
+    series.setData(cciData);
+    // Upper level line (+100) - dashed gray
+    series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (-100) - dashed gray
+    series.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    // Zero line - dashed gray
+    series.createPriceLine({price:0,color:'rgba(120,123,134,.3)',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'0'});
     indicatorSeries[id]=series;
   }
 
   if(id==='williams'){
+    const williamsData=calcWilliams(chartData,s.period);
+    // Background shading between -80 to -20 (TradingView style)
+    const bgData=williamsData.map(d=>({time:d.time, value:-20, color:'rgba(41,98,255,.08)'}));
+    const bgSeries=chart.addHistogramSeries({
+      priceScaleId:'williams',
+      priceFormat:{type:'price'},
+      lastValueVisible:false,
+      priceLineVisible:false
+    });
+    bgSeries.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}, autoScale:true});
+    bgSeries.setData(bgData);
+    // Williams %R line - Purple
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'Williams %R '+s.period,priceScaleId:'williams'});
-    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
-    series.setData(calcWilliams(chartData,s.period));
-    series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
-    indicatorSeries[id]=series;
+    series.setData(williamsData);
+    // Upper level line (-20) - dashed gray
+    series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (-80) - dashed gray
+    series.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    indicatorSeries[id]=[bgSeries,series];
   }
 
   if(id==='mfi'){
+    const mfiData=calcMFI(chartData,s.period);
+    // MFI line - Purple
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'MFI '+s.period,priceScaleId:'mfi'});
-    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
-    series.setData(calcMFI(chartData,s.period));
-    series.createPriceLine({price:s.upper,color:'#ef5350',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
-    series.createPriceLine({price:s.lower,color:'#26a69a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
+    series.priceScale().applyOptions({scaleMargins:{top:.05,bottom:.05}, autoScale:true});
+    series.setData(mfiData);
+    // Upper level line (80) - dashed gray
+    series.createPriceLine({price:s.upper,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.upper)});
+    // Lower level line (20) - dashed gray
+    series.createPriceLine({price:s.lower,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:String(s.lower)});
     indicatorSeries[id]=series;
   }
 
   if(id==='adx'){
+    const adxData=calcADX(chartData,s.period);
+    // ADX line - Orange
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ADX '+s.period,priceScaleId:'adx'});
     series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
-    series.setData(calcADX(chartData,s.period));
+    series.setData(adxData);
+    // Level 20 line - dashed gray (weak trend)
+    series.createPriceLine({price:20,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'20'});
+    // Level 25 line - dashed gray (strong trend)
+    series.createPriceLine({price:25,color:'rgba(120,123,134,.5)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'25'});
     indicatorSeries[id]=series;
   }
 
