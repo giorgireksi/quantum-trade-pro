@@ -3672,6 +3672,8 @@ function hideContextMenu(){
 
 /* ================= FLOAT TOOLBAR ================= */
 
+let floatToolbarPos = null;  // Saved position {left, top}
+
 function showFloatToolbar(cx, cy, d){
   const tb = $('#floatToolbar');
   const colors = ['#2962ff','#ff9800','#26a69a','#ef5350','#9c27b0','#787b86'];
@@ -3684,34 +3686,36 @@ function showFloatToolbar(cx, cy, d){
     <button data-float="delete" title="Delete" style="color:var(--red)">🗑</button>
   `;
   
-  // TradingView-style positioning: above the drawing, centered
-  const tbWidth = 280;  // Approximate toolbar width
-  const tbHeight = 36;  // Approximate toolbar height
-  const padding = 12;   // Distance from drawing
-  
-  // Get drawing bounds for better positioning
-  const bbox = getBBox(d);
+  // Use saved position if available, otherwise calculate new position
   let left, top;
   
-  if(bbox) {
-    // Center horizontally on drawing bounding box
-    const centerX = (bbox.minX + bbox.maxX) / 2;
-    left = centerX - (tbWidth / 2);
-    // Position above the drawing
-    top = bbox.minY - tbHeight - padding;
+  if(floatToolbarPos) {
+    // Restore saved position (TradingView behavior)
+    left = floatToolbarPos.left;
+    top = floatToolbarPos.top;
   } else {
-    // Fallback: position near click point
-    left = cx - (tbWidth / 2);
-    top = cy - tbHeight - padding;
-  }
-  
-  // Keep within viewport bounds
-  left = Math.max(10, Math.min(left, window.innerWidth - tbWidth - 10));
-  top = Math.max(10, top);  // Keep below top edge
-  
-  // If would go above screen, show below instead
-  if(top < 10) {
-    top = (bbox ? bbox.maxY : cy) + padding;
+    // Calculate new position: above the drawing, centered
+    const tbWidth = 280;
+    const tbHeight = 36;
+    const padding = 12;
+    
+    const bbox = getBBox(d);
+    if(bbox) {
+      const centerX = (bbox.minX + bbox.maxX) / 2;
+      left = centerX - (tbWidth / 2);
+      top = bbox.minY - tbHeight - padding;
+    } else {
+      left = cx - (tbWidth / 2);
+      top = cy - tbHeight - padding;
+    }
+    
+    // Keep within viewport bounds
+    left = Math.max(10, Math.min(left, window.innerWidth - tbWidth - 10));
+    top = Math.max(10, top);
+    if(top < 10) top = (bbox ? bbox.maxY : cy) + padding;
+    
+    // Save initial position
+    floatToolbarPos = {left, top};
   }
   
   tb.style.left = left + 'px';
@@ -3746,11 +3750,23 @@ document.addEventListener('mousemove', e => {
   const tb = $('#floatToolbar');
   const dx = e.clientX - floatDragState.startX;
   const dy = e.clientY - floatDragState.startY;
-  tb.style.left = (floatDragState.startLeft + dx) + 'px';
-  tb.style.top = (floatDragState.startTop + dy) + 'px';
+  const newLeft = floatDragState.startLeft + dx;
+  const newTop = floatDragState.startTop + dy;
+  tb.style.left = newLeft + 'px';
+  tb.style.top = newTop + 'px';
+  // Save position as we drag
+  floatToolbarPos = {left: newLeft, top: newTop};
 });
 
 document.addEventListener('mouseup', () => {
+  if(floatDragState) {
+    // Final save of position
+    const tb = $('#floatToolbar');
+    floatToolbarPos = {
+      left: parseInt(tb.style.left) || 0,
+      top: parseInt(tb.style.top) || 0
+    };
+  }
   floatDragState = null;
 });
 
