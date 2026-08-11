@@ -88,6 +88,18 @@ button,input,select,textarea{font:inherit;color:inherit}
 .chart-info b{font-weight:600;color:var(--text)}
 .chart-info b.up{color:var(--green)}
 .chart-info b.down{color:var(--red)}
+.chart-info-ind{
+  position:absolute;top:58px;left:10px;z-index:8;display:none;flex-wrap:wrap;gap:3px 16px;align-items:center;
+  padding:6px 12px;background:var(--pill-bg);backdrop-filter:blur(12px);
+  border:1px solid var(--border);border-radius:10px;font:11px "JetBrains Mono",monospace;
+  box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:calc(100% - 280px)
+}
+.chart-info-ind.visible{display:flex}
+.chart-info-ind .cii-item{display:flex;gap:5px;align-items:center;white-space:nowrap}
+.chart-info-ind .cii-label{color:var(--muted)}
+.chart-info-ind .cii-val{font-weight:700}
+.pane-resize{position:absolute;left:0;right:0;height:5px;cursor:row-resize;z-index:15;background:transparent;pointer-events:auto}
+.pane-resize:hover,.pane-resize.dragging{background:rgba(41,98,255,.45)}
 .loading{position:absolute;inset:0;display:grid;place-items:center;background:rgba(19,23,34,.85);backdrop-filter:blur(3px);z-index:20;transition:opacity .3s}
 .loading.hidden{opacity:0;pointer-events:none}
 .spinner{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
@@ -299,6 +311,8 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
       <span>V</span><b id="iv">—</b>
       <span>Chg</span><b id="ichg">—</b>
     </div>
+    <div class="chart-info-ind" id="chartInfoInd"></div>
+    <div id="paneResizeLayer"></div>
     <div class="loading" id="loading"><div class="spinner"></div></div>
     <div class="replay-controls" id="replayControls">
       <button class="replay-btn" id="replayStepBack" title="Step Back (←)">⏮</button>
@@ -1457,6 +1471,7 @@ function buildMathTA(){
 }
 
 function executeCustomIndicator(ci){
+  let created = [];
   try{
     const mathTA = buildMathTA();
     const runtime = buildIndicatorRuntime(ci.code, mathTA);
@@ -1470,7 +1485,7 @@ function executeCustomIndicator(ci){
     if(!result || !Array.isArray(result.lines)) throw new Error('calculate() must return {lines, markers}');
 
     (customIndicatorSeries[ci.id] || []).forEach(s => { try{ chart.removeSeries(s); }catch(e){} });
-    const created = [];
+    created = [];
     const allPanes = [];
 
     // One dedicated sub-pane for the whole custom indicator when any line or band opts in.
@@ -1535,8 +1550,15 @@ function executeCustomIndicator(ci){
     customIndicatorSeries[ci.id] = created;
     customMarkers[ci.id] = Array.isArray(result.markers) ? result.markers : [];
     applyCustomMarkers();
+    syncIndicatorUI();
 
   }catch(e){
+    // Roll back partially-created series so a failed indicator never leaves
+    // ghost series/panes behind (v5 auto-removes empty panes on last removal).
+    created.forEach(s => { try{ chart.removeSeries(s); }catch(_){} });
+    created = [];
+    delete customMarkers[ci.id];
+    applyCustomMarkers();
     console.error('Custom indicator error [' + ci.name + ']:', e);
     showToast('Indicator error: ' + e.message, 'error');
   }
@@ -1580,6 +1602,7 @@ function toggleCustomIndicator(id){
     showToast(ci.name + ' disabled', 'warning');
   }
   renderIndicatorsPanel();
+  syncIndicatorUI();
 }
 
 function toggleIndicatorOnIndicator(type){
@@ -1615,6 +1638,7 @@ function removeCustomIndicator(id){
   State.customIndicators = State.customIndicators.filter(x => x.id !== id);
   applyCustomMarkers();
   renderIndicatorsPanel();
+  syncIndicatorUI();
   showToast(ci.name + ' removed', 'info');
 }
 
@@ -2501,9 +2525,13 @@ function initChart(){
   chart.subscribeCrosshairMove(handleCrosshair);
   chart.timeScale().subscribeVisibleTimeRangeChange(()=>renderDrawings());
 
+  initPaneResize();
+  syncIndicatorUI();
+
   window.addEventListener('resize', ()=>{
     chart.applyOptions({width:container.clientWidth, height:container.clientHeight});
     resizeDrawLayer();
+    syncIndicatorUI();
   });
 
   loadSymbol(State.currentSymbol);
@@ -2688,6 +2716,7 @@ function loadSymbol(symbol){
     renderDrawings();
     renderAlertsPanel();
     $('#loading').classList.add('hidden');
+    syncIndicatorUI();
   },180);
 }
 
@@ -2705,10 +2734,162 @@ function setChartType(type){
   loadSymbol(State.currentSymbol);
 }
 
+/* ================= INDICATOR LEGEND + PANE DIVIDERS ================= */
+// Decimals used when formatting each separate-pane indicator's crosshair value.
+const IND_LEGEND_DECIMALS = {macd:4, atr:4, obv:4, adx:2, cci:2, mfi:2, rsi:2, stoch:2, stochrsi:2, williams:2};
+// Indicators whose series should not appear in the legend (already shown in OHLC readout).
+const IND_LEGEND_SKIP_IDS = {hist:1};
+let indicatorLegendItems = []; // [{series, valEl, decimals}]
+
+// Rebuild the always-visible indicator legend (TradingView style): one colored
+// value chip per visible indicator series. Bands (title-less series) are skipped.
+function rebuildIndicatorLegend(){
+  const container=$('#chartInfoInd');
+  if(!container) return;
+  container.innerHTML='';
+  indicatorLegendItems=[];
+  const symbolDecimals = SYMBOLS[State.currentSymbol]?.decimals || State.importedSymbols[State.currentSymbol]?.decimals || 2;
+  const collect=(seriesOrArr, indId)=>{
+    if(!seriesOrArr) return;
+    const arr=Array.isArray(seriesOrArr)?seriesOrArr:[seriesOrArr];
+    arr.forEach(s=>{
+      if(!s || IND_LEGEND_SKIP_IDS[indId]) return;
+      let title='';
+      try{ title=s.options().title || ''; }catch(e){}
+      if(!title) return;
+      const el=document.createElement('div');
+      el.className='cii-item';
+      el.innerHTML='<span class="cii-label"></span><span class="cii-val">—</span>';
+      const labelEl=el.querySelector('.cii-label'), valEl=el.querySelector('.cii-val');
+      labelEl.textContent=title;
+      try{ valEl.style.color=s.options().color || '#d1d4dc'; }catch(e){}
+      const decimals = IND_LEGEND_DECIMALS[indId] || (customIndicatorSeries[indId] ? 2 : symbolDecimals);
+      indicatorLegendItems.push({series:s, valEl, decimals});
+      container.appendChild(el);
+    });
+  };
+  Object.entries(indicatorSeries).forEach(([id, s])=>collect(s, id));
+  Object.keys(customIndicatorSeries).forEach(id=>collect(customIndicatorSeries[id], id));
+  container.classList.toggle('visible', indicatorLegendItems.length>0);
+}
+
+// Update legend values from the crosshair position; when the mouse leaves the
+// chart, fall back to each series' last value (persistent, like TradingView).
+function updateIndicatorLegend(param){
+  if(!indicatorLegendItems.length) return;
+  indicatorLegendItems.forEach(it=>{
+    let v=null;
+    try{
+      const pt = param && param.seriesData ? param.seriesData.get(it.series) : undefined;
+      if(pt && typeof pt.value === 'number' && isFinite(pt.value)) v=pt.value;
+    }catch(e){}
+    if(v===null && (!param || !param.time)){
+      try{
+        const lv=it.series.lastValueData(true);
+        if(lv && !lv.noData && isFinite(lv.price)) v=lv.price;
+      }catch(e){}
+    }
+    it.valEl.textContent = v===null ? '—' : v.toFixed(it.decimals);
+  });
+}
+
+// Re-position the drag-to-resize pane divider strips at each pane boundary.
+function updatePaneDividers(){
+  const layer=$('#paneResizeLayer');
+  if(!layer) return;
+  layer.innerHTML='';
+  let n=0;
+  try{ if(typeof chart.panes==='function') n=chart.panes().length; }catch(e){}
+  if(n<2) return;
+  const wrap=$('.chart-wrap');
+  if(!wrap) return;
+  const wrapTop=wrap.getBoundingClientRect().top;
+  for(let i=0;i<n-1;i++){
+    const el=chart.panes()[i].getHTMLElement();
+    if(!el) continue;
+    const r=el.getBoundingClientRect();
+    const d=document.createElement('div');
+    d.className='pane-resize';
+    d.dataset.idx=i;
+    d.style.top=(r.bottom-wrapTop-2)+'px';
+    layer.appendChild(d);
+  }
+}
+
+// One-time setup of the divider drag handling. Dragging adjusts the dragged
+// pane's stretch factor so its pixel height follows the cursor; the remaining
+// panes share the rest proportionally (v5 auto-relayout).
+let paneDrag=null;
+function initPaneResize(){
+  const layer=$('#paneResizeLayer');
+  if(!layer || layer.dataset.resizing) return;
+  layer.dataset.resizing='1';
+  layer.addEventListener('mousedown',(e)=>{
+    const d=e.target.closest('.pane-resize');
+    if(!d) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const idx=parseInt(d.dataset.idx,10);
+    const panes=chart.panes();
+    if(!panes[idx]) return;
+    const fi=panes[idx].getStretchFactor();
+    let S=0, P=0;
+    panes.forEach(p=>{ S+=p.getStretchFactor(); P+=p.getHeight(); });
+    const rest=S-fi;
+    paneDrag={idx, fi, rest, P, startT:panes[idx].getHeight(), startY:e.clientY};
+    d.classList.add('dragging');
+    const onMove=(ev)=>{
+      if(!paneDrag) return;
+      const dy=ev.clientY-paneDrag.startY;
+      const min=36, max=paneDrag.P-min*(chart.panes().length-1);
+      const T=Math.max(min, Math.min(max, paneDrag.startT+dy));
+      if(paneDrag.P-T>0 && paneDrag.rest>0){
+        const fn=(paneDrag.rest*T)/(paneDrag.P-T);
+        try{ chart.panes()[paneDrag.idx].setStretchFactor(fn); }catch(err){}
+        requestAnimationFrame(updatePaneDividers);
+      }
+    };
+    const onUp=()=>{
+      paneDrag=null;
+      window.removeEventListener('mousemove',onMove);
+      window.removeEventListener('mouseup',onUp);
+      layer.querySelectorAll('.pane-resize.dragging').forEach(x=>x.classList.remove('dragging'));
+      updatePaneDividers();
+      renderDrawings();
+    };
+    window.addEventListener('mousemove',onMove);
+    window.addEventListener('mouseup',onUp);
+  });
+}
+
+// Refresh everything UI-related that depends on the indicator set / pane layout.
+let lastPaneDividerState='';
+function syncIndicatorUI(){
+  rebuildIndicatorLegend();
+  updatePaneDividers();
+  lastPaneDividerState=''; // force refresh on next keep-alive tick
+}
+
+// v5 relayouts pane geometry asynchronously (rAF), so divider positions can go
+// stale after indicator toggles/resizes. A cheap keep-alive loop re-glues the
+// divider strips whenever the pane boundary rects drift from what we applied.
+setInterval(()=>{
+  try{
+    const state=[...document.querySelectorAll('#paneResizeLayer .pane-resize')]
+      .map(d=>d.dataset.idx+'@'+d.style.top).join('|');
+    if(state !== lastPaneDividerState){
+      updatePaneDividers();
+      lastPaneDividerState=[...document.querySelectorAll('#paneResizeLayer .pane-resize')]
+        .map(d=>d.dataset.idx+'@'+d.style.top).join('|');
+    }
+  }catch(e){}
+}, 400);
+
 function handleCrosshair(param){
   const info=$('#chartInfo');
   if(!param.time || !param.seriesData || !param.seriesData.get(mainSeries)){
     info.classList.remove('visible');
+    updateIndicatorLegend(param);
     return;
   }
   const d=param.seriesData.get(mainSeries);
@@ -2735,6 +2916,7 @@ function handleCrosshair(param){
   ichg.className=chg>=0?'up':'down';
 
   info.classList.add('visible');
+  updateIndicatorLegend(param);
 }
 
 /* ================= INDICATOR UI ================= */
@@ -2754,6 +2936,7 @@ function toggleIndicator(id){
     removeIndicator(id);
     showToast(id.toUpperCase()+' disabled','warning');
   }
+  syncIndicatorUI();
 }
 
 function removeIndicator(id){
