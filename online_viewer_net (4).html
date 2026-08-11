@@ -718,6 +718,12 @@ const State = {
   drawingGroups:[],
   activeGroupId:null,
   syncDrawings:false,
+  indicatorTemplates:[
+    {id:'trend',name:'Trend Following',indicators:['sma20','ema50','bb']},
+    {id:'momentum',name:'Momentum',indicators:['rsi','macd','stoch']},
+    {id:'volatility',name:'Volatility',indicators:['bb','atr','adx']},
+    {id:'volume',name:'Volume Analysis',indicators:['obv','vwap','volume']}
+  ],
   templates:[
     {id:'blue',name:'Blue',style:{stroke:'#2962ff',width:1.5,dash:'',fill:'rgba(41,98,255,.14)'}},
     {id:'orange',name:'Orange',style:{stroke:'#ff9800',width:1.5,dash:'',fill:'rgba(255,152,0,.14)'}},
@@ -1502,6 +1508,18 @@ function toggleIndicatorOnIndicator(type){
   renderIndicatorsPanel();
 }
 
+function applyIndicatorTemplate(templateId){
+  const template=State.indicatorTemplates.find(t=>t.id===templateId);
+  if(!template) return;
+  // Apply all indicators in template
+  template.indicators.forEach(ind=>{
+    State.indicators[ind]=true;
+    showToast('Applied: '+ind,'success');
+  });
+  renderIndicatorsPanel();
+  showToast('Template applied: '+template.name,'success');
+}
+
 function removeCustomIndicator(id){
   const ci = State.customIndicators.find(x => x.id === id);
   if(!ci) return;
@@ -1632,6 +1650,15 @@ function renderIndicatorsPanel(){
     </div>`;
 
   $('#panel-indicators').innerHTML = html;
+  html += `<div class="section-title" style="margin-top:12px">Indicator Templates</div>
+    ${State.indicatorTemplates.map(t=>`
+      <div class="indicator-item" data-apply-template="${t.id}" style="cursor:pointer">
+        <div class="meta">
+          <div class="name">📋 ${t.name}</div>
+          <div class="desc">${t.indicators.join(", ")}</div>
+        </div>
+      </div>
+    `).join("")}`;
 }
 
 function renderWatchlist(){
@@ -1787,6 +1814,15 @@ function renderObjectTree(){
       <button class="btn small" onclick="State.drawings.forEach(d=>d.visible=true);renderObjectTree();renderDrawings();">Show All</button>
       <button class="btn small" onclick="State.drawings.forEach(d=>d.visible=false);renderObjectTree();renderDrawings();">Hide All</button>
       <button class="btn small danger" onclick="if(confirm('Delete all?')){State.drawings=[];State.selectedDrawingId=null;renderObjectTree();renderDrawings();renderDrawingsPanel();}">Delete All</button>
+    </div>` : ''}
+    ${State.history.length ? `<div class="section-title" style="margin-top:12px">History (${State.history.length})</div>
+      <div style="max-height:100px;overflow-y:auto;font-size:10px;color:var(--text2)">
+        ${State.history.slice(-10).reverse().map((h,i)=>{
+          const count=JSON.parse(h).length;
+          return `<div style="padding:4px 8px;cursor:pointer;border-radius:4px;background:var(--panel2);margin:2px 0" onclick="restoreHistory(${State.history.length-1-i})">${count} drawing(s)</div>`;
+        }).join('')}
+      </div>` : ''}
+  `;
       <button class="btn small" onclick="sortDrawings('type')">Sort Type</button>
       <button class="btn small" onclick="sortDrawings('date')">Sort Date</button>
     </div>` : ''}
@@ -2803,6 +2839,21 @@ function pushHistory(){
   updateHistoryButtons();
 }
 
+function restoreHistory(idx){
+  if(idx<0 || idx>=State.history.length) return;
+  // Save current to redo
+  State.redo.push(JSON.stringify(State.drawings));
+  // Restore from history
+  State.drawings=JSON.parse(State.history[idx]);
+  // Remove everything after this point from history
+  State.history=State.history.slice(0,idx);
+  State.selectedDrawingId=null;
+  renderDrawings();
+  renderObjectTree();
+  renderDrawingsPanel();
+  showToast('Restored history state','info');
+}
+
 function undo(){
   if(!State.history.length) return;
   State.redo.push(JSON.stringify(State.drawings));
@@ -2893,7 +2944,19 @@ function magnetize(pt){
   const barX=chart.timeScale().timeToCoordinate(nearest.time);
   if(barX!==null && Math.abs(barX-pt.x)<18) time=nearest.time;
 
+  // Enhanced snap: OHLC, midpoint, round numbers, previous close
   const candidates=[nearest.open,nearest.high,nearest.low,nearest.close,(nearest.high+nearest.low)/2];
+  
+  // Add round number snaps
+  const dec=SYMBOLS[State.currentSymbol]?.decimals||2;
+  const roundStep=Math.pow(10,Math.max(0,dec-2));
+  const roundBase=Math.round(pt.price/roundStep)*roundStep;
+  candidates.push(roundBase, roundBase+roundStep, roundBase-roundStep);
+  
+  // Add previous bar close if available
+  const prevIdx=chartData.indexOf(nearest)-1;
+  if(prevIdx>=0) candidates.push(chartData[prevIdx].close);
+  
   let price=pt.price, bestDist=12;
 
   for(const p of candidates){
@@ -4752,6 +4815,30 @@ function renderAlertModal(){
     </div>
     <div class="grid2" style="margin-top:8px">
       <div>
+        <label class="label">Second Condition (optional)</label>
+        <select class="input" id="alertCondition2">
+          <option value="none">None</option>
+          <option value="above">Price Above</option>
+          <option value="below">Price Below</option>
+        </select>
+      </div>
+      <div>
+        <label class="label">Logic</label>
+        <select class="input" id="alertLogic">
+          <option value="and">AND (both)</option>
+          <option value="or">OR (either)</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label class="label">Second Price</label>
+        <input type="number" class="input" id="alertPrice2" value="${last}" step="any">
+      </div>
+      <div></div>
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div>
         <label class="label">Frequency</label>
         <select class="input" id="alertFreq">
           <option value="once">Once Only</option>
@@ -4804,6 +4891,9 @@ function renderAlertModal(){
 function addAlert(){
   const condition=$('#alertCondition').value;
   const price=parseFloat($('#alertPrice').value);
+  const condition2=$('#alertCondition2')?.value||'none';
+  const price2=parseFloat($('#alertPrice2')?.value)||0;
+  const logic=$('#alertLogic')?.value||'and';
   const freq=$('#alertFreq')?.value||'once';
   const expiry=$('#alertExpiry')?.value||'none';
   const name=$('#alertName')?.value||'';
@@ -4817,6 +4907,9 @@ function addAlert(){
     symbol:State.currentSymbol,
     condition,
     price,
+    condition2,
+    price2,
+    logic,
     triggered:false,
     enabled:true,
     freq,
@@ -4851,7 +4944,9 @@ function checkAlerts(lastPrice){
 
     const prevPrice=State.lastPrice||lastPrice;
     let triggered=false;
+    let triggered2=false;
     
+    // First condition
     if(a.condition==='above') triggered=lastPrice>=a.price;
     else if(a.condition==='below') triggered=lastPrice<=a.price;
     else if(a.condition==='crossing_up') triggered=prevPrice<a.price && lastPrice>=a.price;
@@ -4864,6 +4959,16 @@ function checkAlerts(lastPrice){
     else if(a.condition==='pct_change_down'){
       const pct=((a.price-lastPrice)/a.price)*100;
       triggered=pct>=1;
+    }
+    
+    // Second condition (if set)
+    if(a.condition2 && a.condition2!=='none' && a.price2){
+      if(a.condition2==='above') triggered2=lastPrice>=a.price2;
+      else if(a.condition2==='below') triggered2=lastPrice<=a.price2;
+      
+      // Apply AND/OR logic
+      if(a.logic==='and') triggered=triggered && triggered2;
+      else triggered=triggered || triggered2;
     }
 
     if(triggered){
@@ -5165,6 +5270,9 @@ function bindEvents(){
 
     const ioi=e.target.closest('[data-ioi]');
     if(ioi) return toggleIndicatorOnIndicator(ioi.dataset.ioi);
+
+    const applyTemplate=e.target.closest('[data-apply-template]');
+    if(applyTemplate) return applyIndicatorTemplate(applyTemplate.dataset.applyTemplate);
 
     const sym=e.target.closest('[data-symbol]');
     if(sym){
