@@ -2672,12 +2672,8 @@ function removeIndicator(id){
 
 function applyIndicator(id){
   console.log('applyIndicator called:', id);
-  console.log('Chart object:', chart);
-  console.log('Chart available:', !!chart);
   removeIndicator(id);
   const s = State.indicatorSettings[id];
-  console.log('Settings:', s);
-  console.log('Chart data:', chartData?.length, 'bars');
   
   if(!chart) {
     console.error('Chart not initialized!');
@@ -2688,9 +2684,11 @@ function applyIndicator(id){
     return;
   }
 
+  // ==================== OVERLAY INDICATORS (on main chart) ====================
+  // These indicators share the price axis and display on the main chart
+
   if(id==='sma20'){
     const smaData = calcSMA(chartData, s.period);
-    console.log('SMA data:', smaData?.length, 'points');
     const series=chart.addLineSeries({color:s.color,lineWidth:s.width,title:'SMA '+s.period});
     series.setData(smaData);
     indicatorSeries[id]=series;
@@ -2815,14 +2813,14 @@ function applyIndicator(id){
 
   if(id==='adx'){
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'ADX '+s.period,priceScaleId:'adx'});
-    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     series.setData(calcADX(chartData,s.period));
     indicatorSeries[id]=series;
   }
 
   if(id==='obv'){
     const series=chart.addLineSeries({color:s.color,lineWidth:2,title:'OBV',priceScaleId:'obv'});
-    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}});
+    series.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}, autoScale:true});
     series.setData(calcOBV(chartData));
     indicatorSeries[id]=series;
   }
