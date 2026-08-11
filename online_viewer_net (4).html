@@ -2308,9 +2308,12 @@ function calcDonchian(data, period=20){
 }
 
 function calcIchimokuCloud(data, tenkan=9, kijun=26, senkou=52){
-  const mid=data.map(d=>({time:d.time,hl:(d.high+d.low)/2}));
   const tenkanSen=[];
   const kijunSen=[];
+  const senkouASen=[];
+  const senkouBSen=[];
+  
+  // Calculate Tenkan-sen and Kijun-sen
   for(let i=0;i<data.length;i++){
     if(i>=tenkan-1){
       let hh=-Infinity,ll=Infinity;
@@ -2323,7 +2326,30 @@ function calcIchimokuCloud(data, tenkan=9, kijun=26, senkou=52){
       kijunSen.push({time:data[i].time,value:(hh+ll)/2});
     }
   }
-  return {tenkan:tenkanSen,kijun:kijunSen};
+  
+  // Calculate Senkou Span A (displaced forward by kijun periods)
+  const displacement = kijun;
+  for(let i=0;i<tenkanSen.length;i++){
+    const kijunIdx = i - displacement;
+    if(kijunIdx >= 0 && kijunIdx < kijunSen.length){
+      const time = tenkanSen[i].time;
+      // Displace forward by adding displacement periods to time
+      const displacedTime = time + displacement * 86400; // Approximate
+      senkouASen.push({time:displacedTime, value:(tenkanSen[i].value + kijunSen[kijunIdx].value) / 2});
+    }
+  }
+  
+  // Calculate Senkou Span B (displaced forward, 52-period high/low midpoint)
+  for(let i=0;i<data.length;i++){
+    if(i>=senkou-1){
+      let hh=-Infinity,ll=Infinity;
+      for(let j=0;j<senkou;j++){hh=Math.max(hh,data[i-j].high);ll=Math.min(ll,data[i-j].low);}
+      const displacedTime = data[i].time + displacement * 86400;
+      senkouBSen.push({time:displacedTime,value:(hh+ll)/2});
+    }
+  }
+  
+  return {tenkan:tenkanSen, kijun:kijunSen, senkouA:senkouASen, senkouB:senkouBSen};
 }
 
 /* ================= CHART ================= */
@@ -2671,13 +2697,26 @@ function applyIndicator(id){
 
   if(id==='macd'){
     const m=calcMACD(chartData,s.fast,s.slow,s.signal);
-    const hist=chart.addHistogramSeries({title:'MACD Hist',priceScaleId:'macd'});
+    // MACD Histogram with TradingView colors
+    const hist=chart.addHistogramSeries({
+      title:'MACD Hist',
+      priceScaleId:'macd',
+      priceFormat:{type:'price',precision:4,decimalMove:4}
+    });
     hist.priceScale().applyOptions({scaleMargins:{top:.75,bottom:0}});
-    hist.setData(m.histogram);
+    // Color histogram bars: green when above 0, red when below
+    const histData=m.histogram.map(h=>({
+      time:h.time,
+      value:h.value,
+      color:h.value>=0?'rgba(38,166,154,.7)':'rgba(239,83,80,.7)'
+    }));
+    hist.setData(histData);
 
+    // MACD Line - Blue
     const macdLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'MACD',priceScaleId:'macd'});
     macdLine.setData(m.macd);
 
+    // Signal Line - Orange
     const sigLine=chart.addLineSeries({color:'#ff9800',lineWidth:2,title:'Signal',priceScaleId:'macd'});
     sigLine.setData(m.signal);
 
@@ -2779,20 +2818,27 @@ function applyIndicator(id){
 
   if(id==='ichimoku'){
     const ich=calcIchimokuCloud(chartData,s.tenkan,s.kijun,s.senkou);
-    const tenkanLine=chart.addLineSeries({color:'#2962ff',lineWidth:1,title:'Tenkan'});
+    // Tenkan-sen (Conversion Line) - Blue
+    const tenkanLine=chart.addLineSeries({color:'#2962ff',lineWidth:1,title:'Tenkan-sen'});
     tenkanLine.setData(ich.tenkan);
-    const kijunLine=chart.addLineSeries({color:'#ef5350',lineWidth:1,title:'Kijun'});
+    // Kijun-sen (Base Line) - Red/Orange
+    const kijunLine=chart.addLineSeries({color:'#ef5350',lineWidth:1,title:'Kijun-sen'});
     kijunLine.setData(ich.kijun);
-    indicatorSeries[id]=[tenkanLine,kijunLine];
+    // Senkou Span A (Leading Span A) - Green
+    const senkouALine=chart.addLineSeries({color:'#26a69a',lineWidth:1,title:'Senkou A'});
+    senkouALine.setData(ich.senkouA);
+    // Senkou Span B (Leading Span B) - Red
+    const senkouBLine=chart.addLineSeries({color:'#ef5350',lineWidth:1,title:'Senkou B'});
+    senkouBLine.setData(ich.senkouB);
+    indicatorSeries[id]=[tenkanLine,kijunLine,senkouALine,senkouBLine];
   }
 
   if(id==='supertrend'){
     const st=calcSuperTrend(chartData,s.period,s.multiplier);
-    st.forEach(p=>{
-      const series=chart.addLineSeries({color:p.color,lineWidth:2,title:'SuperTrend'});
-      series.setData([p]);
-    });
-    indicatorSeries[id]=[];
+    // Create a single series with color data
+    const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'SuperTrend'});
+    series.setData(st.map(p=>({time:p.time, value:p.value})));
+    indicatorSeries[id]=series;
   }
 
   if(id==='keltner'){
