@@ -69,6 +69,12 @@ button,input,select,textarea{font:inherit;color:inherit}
 .tool-divider{width:26px;height:1px;background:var(--border);margin:3px 0}
 .chart-wrap{grid-area:chart;position:relative;background:var(--bg);overflow:hidden}
 #chart,#drawLayer{position:absolute;inset:0}
+
+/* Multi-chart layout */
+:root{--chart-cols:1;--chart-rows:1}
+
+.multi-chart-active #chart{display:grid;grid-template-columns:repeat(var(--chart-cols),1fr);grid-template-rows:repeat(var(--chart-rows),1fr);gap:2px;background:#1e222d}
+.multi-chart-active #chart>div{position:relative;border:1px solid #434651;border-radius:4px;overflow:hidden}
 #drawLayer{pointer-events:none;z-index:5}
 #drawLayer.active{pointer-events:all;cursor:crosshair}
 .chart-info{
@@ -269,6 +275,8 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
     </div>
     <div class="spacer"></div>
     <button class="header-btn" id="compareBtn">🔀 Compare</button>
+    <button class="header-btn" id="layoutBtn">📐 Layout</button>
+    <button class="header-btn ${State.syncDrawings?'active':''}" id="syncBtn">🔗 Sync</button>
     <button class="header-btn" id="csvImportBtn">📂 Import CSV</button>
     <button class="header-btn" id="importIndicatorBtn">🧩 Import Indicator</button>
     <button class="header-btn" id="replayBtn">⏯ Replay</button>
@@ -556,6 +564,12 @@ const TOOLS = [
   {id:'gannsquarefixed', tip:'Gann Square Fixed', icon:'<rect x="4" y="4" width="16" height="16"/><rect x="7" y="7" width="10" height="10"/><rect x="10" y="10" width="4" height="4"/><path d="M4 4l16 16M20 4L4 20"/>'},
   {id:'elliottabcde', tip:'Elliott Triangle ABCDE', icon:'<path d="M4 16l4-8 4 4 4-6 4 10"/><text x="2" y="12" font-size="5" fill="currentColor">A</text><text x="14" y="6" font-size="5" fill="currentColor">C</text><text x="20" y="14" font-size="5" fill="currentColor">E</text>'},
   {id:'elliottwxy', tip:'Elliott WXY Complex', icon:'<path d="M2 18l4-12 4 8 4-10 4 12"/><text x="2" y="14" font-size="5" fill="currentColor">W</text><text x="10" y="10" font-size="5" fill="currentColor">X</text><text x="16" y="14" font-size="5" fill="currentColor">Y</text>'},
+  {id:'cypher', tip:'Cypher Pattern (6 points)', icon:'<path d="M2 18l4-10 4 6 4-8 4 8"/><circle cx="2" cy="18" r="1.5"/><circle cx="6" cy="8" r="1.5"/><circle cx="10" cy="14" r="1.5"/><circle cx="14" cy="6" r="1.5"/><circle cx="18" cy="14" r="1.5"/>'},
+  {id:'threedrives', tip:'Three Drives (6 points)', icon:'<path d="M2 18l4-10 2 5 4-12 2 8 4-6"/><text x="2" y="14" font-size="4" fill="currentColor">1</text><text x="10" y="10" font-size="4" fill="currentColor">3</text><text x="18" y="8" font-size="4" fill="currentColor">5</text>'},
+  {id:'butterfly', tip:'Butterfly Pattern (5 points)', icon:'<path d="M2 18l6-14 4 10 4-6 6 10"/><circle cx="2" cy="18" r="1.5"/><circle cx="8" cy="4" r="1.5"/><circle cx="12" cy="14" r="1.5"/><circle cx="16" cy="8" r="1.5"/><circle cx="22" cy="18" r="1.5"/>'},
+  {id:'bat', tip:'Bat Pattern (5 points)', icon:'<path d="M2 18l5-12 4 8 5-10 6 14"/><circle cx="2" cy="18" r="1.5"/><circle cx="7" cy="6" r="1.5"/><circle cx="11" cy="14" r="1.5"/><circle cx="16" cy="4" r="1.5"/><circle cx="22" cy="18" r="1.5"/>'},
+  {id:'crab', tip:'Crab Pattern (5 points)', icon:'<path d="M2 18l4-16 6 14 4-8 6 10"/><circle cx="2" cy="18" r="1.5"/><circle cx="6" cy="2" r="1.5"/><circle cx="12" cy="16" r="1.5"/><circle cx="16" cy="8" r="1.5"/><circle cx="22" cy="18" r="1.5"/>'},
+  {id:'patternhead', tip:'Head & Shoulders (7 points)', icon:'<path d="M2 18l4-6 4-10 4 10 4 6"/><circle cx="2" cy="18" r="1"/><circle cx="6" cy="12" r="1"/><circle cx="10" cy="2" r="1.5"/><circle cx="14" cy="12" r="1"/><circle cx="18" cy="18" r="1"/>'},
   {id:'rotatedrect', tip:'Rotated Rectangle', icon:'<rect x="4" y="8" width="16" height="10" rx="0" transform="rotate(-20 12 13)"/>'},
   {id:'path', tip:'Path (Editable)', icon:'<path d="M4 20C4 10 10 4 20 4" fill="none"/><circle cx="4" cy="20" r="1.5"/><circle cx="20" cy="4" r="1.5"/>'},
   {id:'arc', tip:'Arc (3 points)', icon:'<path d="M4 16 Q12 4 20 16"/>'},
@@ -703,6 +717,7 @@ const State = {
   stayInDrawingMode:false,
   drawingGroups:[],
   activeGroupId:null,
+  syncDrawings:false,
   templates:[
     {id:'blue',name:'Blue',style:{stroke:'#2962ff',width:1.5,dash:'',fill:'rgba(41,98,255,.14)'}},
     {id:'orange',name:'Orange',style:{stroke:'#ff9800',width:1.5,dash:'',fill:'rgba(255,152,0,.14)'}},
@@ -1525,6 +1540,7 @@ function renderToolbar(){
   $('#toolbar').innerHTML = `
     <div class="tf-group">
       ${TIMEFRAMES.map(([id,label]) => `<button class="chip ${id===State.currentTimeframe?'active':''}" data-tf="${id}">${label}</button>`).join('')}
+      <input type="text" class="chip" id="customTf" placeholder="Custom" style="width:60px;font-size:10px;padding:2px 4px">
     </div>
     <div class="type-group">
       ${CHART_TYPES.map(t => `<button class="icon-btn ${t.id===State.chartType?'active':''}" data-type="${t.id}" title="${t.tip}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${t.icon}</svg></button>`).join('')}
@@ -2908,6 +2924,8 @@ function defaultStyleFor(type){
   if(['fibfan','fibarc','fibchannel'].includes(type)) return s('#2962ff',1);
   if(type==='arc') return s('#9c27b0',1.5);
   if(['elliott','elliottabc','elliottabcde','elliottwxy'].includes(type)) return s('#2962ff',1.5);
+  if(['cypher','butterfly','bat','crab'].includes(type)) return s('#9c27b0',1.5);
+  if(type==='threedrives') return s('#ff9800',1.5);
   if(type==='rotatedrect') return s('#2962ff',1.5,'','rgba(41,98,255,.12)');
   if(type==='path') return s('#2962ff',2);
   if(type==='headshoulders') return s('#9c27b0',1.5);
@@ -3202,6 +3220,22 @@ function onDrawMouseDown(e){
           drawStart=drawStart2=null;
         }
       } else if(t==='elliottwxy'){
+        if(!polyPoints.length) polyPoints=[drawStart, drawStart2];
+        polyPoints.push(mpt);
+        if(polyPoints.length>=6){
+          addDrawing({type:t, points:[...polyPoints]});
+          polyPoints=[];
+          drawStart=drawStart2=null;
+        }
+      } else if(['cypher','butterfly','bat','crab'].includes(t)){
+        if(!polyPoints.length) polyPoints=[drawStart, drawStart2];
+        polyPoints.push(mpt);
+        if(polyPoints.length>=5){
+          addDrawing({type:t, points:[...polyPoints]});
+          polyPoints=[];
+          drawStart=drawStart2=null;
+        }
+      } else if(t==='threedrives'){
         if(!polyPoints.length) polyPoints=[drawStart, drawStart2];
         polyPoints.push(mpt);
         if(polyPoints.length>=6){
@@ -4546,6 +4580,34 @@ function renderShape(d, isPreview=false){
     return;
   }
 
+  if(['cypher','butterfly','bat','crab'].includes(d.type) && d.points?.length>=2){
+    const pts=d.points.map(getXY).filter(Boolean);
+    if(pts.length<2) return;
+    let path=`M ${pts[0].x} ${pts[0].y}`;
+    for(let i=1;i<pts.length;i++) path+=` L ${pts[i].x} ${pts[i].y}`;
+    svgPath(path,'none',st.stroke,st.width);
+    const labels={cypher:['X','A','B','C','D'],butterfly:['X','A','B','C','D'],bat:['X','A','B','C','D'],crab:['X','A','B','C','D']};
+    pts.forEach((p,i)=>{
+      svgDot(p.x,p.y,st.stroke,4);
+      svgPillLabel(p.x+8,p.y-8,(labels[d.type]||[])[i]||'',st.stroke);
+    });
+    return;
+  }
+
+  if(d.type==='threedrives' && d.points?.length>=2){
+    const pts=d.points.map(getXY).filter(Boolean);
+    if(pts.length<2) return;
+    let path=`M ${pts[0].x} ${pts[0].y}`;
+    for(let i=1;i<pts.length;i++) path+=` L ${pts[i].x} ${pts[i].y}`;
+    svgPath(path,'none',st.stroke,st.width);
+    const labels=['0','1','A','2','B','3'];
+    pts.forEach((p,i)=>{
+      svgDot(p.x,p.y,st.stroke,4);
+      svgPillLabel(p.x+8,p.y-8,labels[i]||'',st.stroke);
+    });
+    return;
+  }
+
   if(d.type==='anchoredvwap'){
     if(!p1||!p2) return;
     const startIdx=chartData.findIndex(b=>b.time>=d.pt1.time);
@@ -4915,6 +4977,11 @@ const QS_ITEMS = [
   {id:'elliottabc',label:'Elliott ABC',desc:'Correction wave',icon:'🌊',shortcut:'E',category:'Tools'},
   {id:'elliottabcde',label:'Elliott ABCDE',desc:'Triangle wave',icon:'🔺',category:'Tools'},
   {id:'elliottwxy',label:'Elliott WXY',desc:'Complex correction',icon:'🌀',category:'Tools'},
+  {id:'cypher',label:'Cypher Pattern',desc:'Harmonic pattern',icon:'🦋',category:'Patterns'},
+  {id:'threedrives',label:'Three Drives',desc:'3-drive reversal',icon:'3️⃣',category:'Patterns'},
+  {id:'butterfly',label:'Butterfly Pattern',desc:'Harmonic pattern',icon:'🦋',category:'Patterns'},
+  {id:'bat',label:'Bat Pattern',desc:'Harmonic pattern',icon:'🦇',category:'Patterns'},
+  {id:'crab',label:'Crab Pattern',desc:'Harmonic pattern',icon:'🦀',category:'Patterns'},
   {id:'fibfan',label:'Fib Fan',desc:'Speed resistance fan',icon:'📊',category:'Tools'},
   {id:'fibarc',label:'Fib Arcs',desc:'Speed resistance arcs',icon:'🎯',category:'Tools'},
   {id:'fibchannel',label:'Fib Channel',desc:'Fibonacci channel',icon:'📊',category:'Tools'},
@@ -5019,6 +5086,19 @@ function bindEvents(){
     const tf=e.target.closest('[data-tf]');
     if(tf) return setTimeframe(tf.dataset.tf);
 
+    if(e.target.closest('#customTf')){
+      const val=e.target.value;
+      if(val && e.key==='Enter'){
+        const mins=parseInt(val,10);
+        if(mins>0 && mins<=43200){
+          State.currentTimeframe=String(mins);
+          loadSymbol(State.currentSymbol);
+          showToast('Custom timeframe: '+mins+'m','info');
+        }
+      }
+      return;
+    }
+
     const type=e.target.closest('[data-type]');
     if(type) return setChartType(type.dataset.type);
 
@@ -5058,6 +5138,13 @@ function bindEvents(){
     }
     if(e.target.closest('#csvImportBtn')){ openModal('csvImportModal'); return; }
     if(e.target.closest('#compareBtn')){ toggleCompare(); return; }
+    if(e.target.closest('#layoutBtn')){ toggleMultiChartLayout(); return; }
+    if(e.target.closest('#syncBtn')){
+      State.syncDrawings=!State.syncDrawings;
+      renderToolbar();
+      showToast('Drawing sync: '+(State.syncDrawings?'ON':'OFF'),'info');
+      return;
+    }
     if(e.target.closest('#importIndicatorBtn')){ openModal('importIndicatorModal'); return; }
 
     const tab=e.target.closest('.tab');
@@ -5475,6 +5562,27 @@ function renderSymbolResults(query){
   $('#symbolResults').innerHTML = results.length
     ? results.map(s=>`<div class="symbol-result" data-symbol="${s}"><div class="meta"><div class="name">${s}</div></div></div>`).join('')
     : '<div class="empty">No symbols found</div>';
+}
+
+let multiChartMode=null;
+
+function toggleMultiChartLayout(){
+  if(multiChartMode){
+    // Reset to single chart
+    document.documentElement.style.setProperty('--chart-cols','1');
+    document.documentElement.style.setProperty('--chart-rows','1');
+    multiChartMode=null;
+    showToast('Single chart','info');
+    return;
+  }
+  const mode=prompt('Chart layout:\n1 = 1x1 (single)\n2 = 1x2 (vertical split)\n3 = 2x1 (horizontal split)\n4 = 2x2 (grid)');
+  if(!mode) return;
+  const modes={'1':['1','1'],'2':['1','2'],'3':['2','1'],'4':['2','2']};
+  const[cols,rows]=modes[mode]||['1','1'];
+  document.documentElement.style.setProperty('--chart-cols',cols);
+  document.documentElement.style.setProperty('--chart-rows',rows);
+  multiChartMode=mode;
+  showToast('Layout: '+cols+'x'+rows,'info');
 }
 
 function toggleCompare(){
