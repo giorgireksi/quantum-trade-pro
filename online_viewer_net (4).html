@@ -268,6 +268,7 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
       <span id="symbolChange" class="symbol-change up">+0.00%</span>
     </div>
     <div class="spacer"></div>
+    <button class="header-btn" id="compareBtn">🔀 Compare</button>
     <button class="header-btn" id="csvImportBtn">📂 Import CSV</button>
     <button class="header-btn" id="importIndicatorBtn">🧩 Import Indicator</button>
     <button class="header-btn" id="replayBtn">⏯ Replay</button>
@@ -427,6 +428,18 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
         <option value="true">Visible</option>
         <option value="false">Hidden</option>
       </select>
+      <label class="label">Price Scale</label>
+      <select class="input" id="setPriceScale">
+        <option value="normal">Normal (Linear)</option>
+        <option value="logarithmic">Logarithmic</option>
+        <option value="percent">Percentage</option>
+        <option value="indexedTo100">Indexed to 100</option>
+      </select>
+      <label class="label">Countdown to Bar Close</label>
+      <select class="input" id="setCountdown">
+        <option value="true">Visible</option>
+        <option value="false">Hidden</option>
+      </select>
     </div>
     <div class="modal-footer">
       <button class="btn" onclick="closeModal('settingsModal')">Cancel</button>
@@ -567,6 +580,7 @@ const TOOLS = [
   {divider:true},
   {id:'anchoredvwap', tip:'Anchored VWAP', icon:'<path d="M3 17l5-6 5 4 8-9"/><line x1="3" y1="12" x2="21" y2="12" stroke-dasharray="2 2"/><circle cx="3" cy="17" r="2" fill="currentColor"/>'},
   {id:'barspattern', tip:'Bars Pattern (Replicate)', icon:'<path d="M3 8v6M6 10v4M9 7v8M12 9v6M15 6v10M18 8v8" stroke-dasharray="2 1"/><path d="M3 8v6M6 10v4M9 7v8M12 9v6M15 6v10M18 8v8" transform="translate(3,3)" opacity=".4"/>'},
+  {id:'ghostfeed', tip:'Ghost Feed (Simulate Future)', icon:'<path d="M3 8v6M6 10v4M9 7v8M12 9v6M15 6v10M18 8v8" opacity=".3"/><path d="M3 8v6M6 10v4M9 7v8M12 9v6M15 6v10M18 8v8" transform="translate(6,0)" opacity=".5" stroke-dasharray="2 1"/>'},
   {id:'price_label', tip:'Price Label', icon:'<rect x="2" y="9" width="14" height="6" rx="3"/><text x="5" y="13" font-size="5" fill="currentColor">$</text><line x1="16" y1="12" x2="22" y2="12"/>'},
   {id:'signpost', tip:'Signpost', icon:'<line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="4" r="3"/><line x1="12" y1="7" x2="12" y2="20"/>'},
 
@@ -575,6 +589,7 @@ const TOOLS = [
   {divider:true},
   {id:'deleteAll', action:true, tip:'Delete All Drawings', icon:'<polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'},
   {id:'lock', action:true, tip:'Lock Drawings', icon:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'}
+  {id:'staydraw', action:true, tip:'Stay in Drawing Mode', icon:'<path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="3"/>'},
 ];
 
 const INDICATORS = [
@@ -673,6 +688,7 @@ const State = {
   settings:{up:'#26a69a',down:'#ef5350',grid:true,priceScale:'normal'},
   favorites:[],
   clipboard:null,
+  stayInDrawingMode:false,
   templates:[
     {id:'blue',name:'Blue',style:{stroke:'#2962ff',width:1.5,dash:'',fill:'rgba(41,98,255,.14)'}},
     {id:'orange',name:'Orange',style:{stroke:'#ff9800',width:1.5,dash:'',fill:'rgba(255,152,0,.14)'}},
@@ -698,6 +714,7 @@ const State = {
 };
 
 let chart, mainSeries, volumeSeries, chartData=[];
+let compareSeries=null, compareData=[];
 let indicatorSeries = {};
 let drawStart=null, drawStart2=null, polyPoints=[], brushPoints=[];
 let dragMode=null;
@@ -1503,7 +1520,7 @@ function renderToolbar(){
 function renderTools(){
   $('#tools').innerHTML = TOOLS.map(t => {
     if(t.divider) return '<div class="tool-divider"></div>';
-    const active = (!t.action && t.id===State.activeTool) || (t.action && t.id==='lock' && State.locked);
+    const active = (!t.action && t.id===State.activeTool) || (t.action && t.id==='lock' && State.locked) || (t.action && t.id==='staydraw' && State.stayInDrawingMode);
     return `<button class="tool-btn ${active?'active':''}" data-${t.action?'action':'tool'}="${t.id}" data-tooltip="${t.tip}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${t.icon}</svg></button>`;
   }).join('');
 }
@@ -1626,6 +1643,8 @@ function renderDrawingsPanel(){
           <button class="btn small" data-action="editStyle">⚙ Style</button>
           <button class="btn small" data-action="duplicate">📋 Copy</button>
           <button class="btn small" data-action="lockDrawing">${selected.locked?'🔓 Unlock':'🔒 Lock'}</button>
+          <button class="btn small" data-action="bringFront">⬆</button>
+          <button class="btn small" data-action="sendBack">⬇</button>
           <button class="btn small danger" data-action="deleteSelected">🗑 Delete</button>
           <button class="btn small" data-action="deselect">✕</button>
         </div>
@@ -2143,6 +2162,18 @@ function calcIchimokuCloud(data, tenkan=9, kijun=26, senkou=52){
 
 /* ================= CHART ================= */
 
+function applyPriceScaleMode(){
+  if(!chart) return;
+  const mode = State.settings.priceScale || 'normal';
+  const modes = {
+    normal: LightweightCharts.PriceScaleMode.Normal,
+    logarithmic: LightweightCharts.PriceScaleMode.Logarithmic,
+    percent: LightweightCharts.PriceScaleMode.Percentage,
+    indexedTo100: LightweightCharts.PriceScaleMode.IndexedTo100
+  };
+  chart.priceScale('right').applyOptions({ mode: modes[mode] || modes.normal });
+}
+
 function initChart(){
   const container = $('#chart');
   chart = LightweightCharts.createChart(container, {
@@ -2163,7 +2194,7 @@ function initChart(){
       vertLine:{color:'rgba(120,123,134,.45)',width:1,style:2,labelBackgroundColor:'#2962ff'},
       horzLine:{color:'rgba(120,123,134,.45)',width:1,style:2,labelBackgroundColor:'#2962ff'}
     },
-    rightPriceScale:{borderColor:'#434651', scaleMargins:{top:.1,bottom:.2}},
+    rightPriceScale:{borderColor:'#434651', scaleMargins:{top:.1,bottom:.2}, mode: LightweightCharts.PriceScaleMode.Normal},
     timeScale:{borderColor:'#434651', timeVisible:true, secondsVisible:false},
     handleScroll:true,
     handleScale:true
@@ -2697,6 +2728,7 @@ function defaultStyleFor(type){
   if(type==='abcd') return s('#26a69a',1.5,'','rgba(38,166,154,.10)');
   if(type==='event') return s('#ff9800',1.5);
   if(type==='anchoredvwap') return s('#9c27b0',2);
+  if(type==='ghostfeed') return s('#787b86',1.5);
   if(type==='barspattern') return s('#2962ff',1.5);
   if(type==='price_label') return s('#2962ff',1.5);
   if(type==='signpost') return s('#ff9800',1.5);
@@ -3139,7 +3171,8 @@ function onDrawMouseUp(e){
   if(!['horizontal','vertical','text','note','callout','flag','balloon','event','emoji'].includes(t)){
     addDrawing({type:t, pt1:drawStart, pt2:mpt});
   }
-  drawStart=null;
+  if(!State.stayInDrawingMode) drawStart=null;
+  else drawStart=mpt;
 }
 
 function onDrawClick(e){
@@ -4213,11 +4246,49 @@ function renderShape(d, isPreview=false){
     pattern.forEach((b,i)=>{
       const x=chart.timeScale().timeToCoordinate(b.time);
       if(x===null) return;
-      const oY=mainSeries.priceToCoordinate(b.open+offset);
-      const cY=mainSeries.priceToCoordinate(b.close+offset);
-      if(oY===null||cY===null) return;
-      svgLine(x,oY,x,cY,st.stroke||'#2962ff',st.width||1.5,null);
     });
+    return;
+  }
+
+  if(d.type==='ghostfeed'){
+    if(!p1) return;
+    const count=d.ghostCount||20;
+    const last=chartData[chartData.length-1];
+    if(!last) return;
+    const tf=State.currentTimeframe==='D'?86400:State.currentTimeframe==='W'?604800:parseInt(State.currentTimeframe,10)*60;
+    const rng=seededRandom('ghost:'+d.id);
+    const vol=SYMBOLS[State.currentSymbol]?.vol||0.02;
+    let price=last.close;
+    const bars=[];
+    for(let i=0;i<count;i++){
+      const time=last.time+tf*(i+1);
+      const move=(rng()-.5)*vol*1.5;
+      const open=price;
+      const close=price*(1+move);
+      const high=Math.max(open,close)*(1+rng()*vol*.5);
+      const low=Math.min(open,close)*(1-rng()*vol*.5);
+      bars.push({time,open,high,low,close});
+      price=close;
+    }
+    bars.forEach(b=>{
+      const x=chart.timeScale().timeToCoordinate(b.time);
+      if(x===null) return;
+      const oY=mainSeries.priceToCoordinate(b.open);
+      const cY=mainSeries.priceToCoordinate(b.close);
+      if(oY===null||cY===null) return;
+      const col=b.close>=b.open?(st.stroke||'#26a69a'):(st.stroke||'#ef5350');
+      svgLine(x,oY,x,cY,col,1.5,null);
+      svgLine(x-3,mainSeries.priceToCoordinate(b.high),x+3,mainSeries.priceToCoordinate(b.high),col,1,null);
+      svgLine(x-3,mainSeries.priceToCoordinate(b.low),x+3,mainSeries.priceToCoordinate(b.low),col,1,null);
+    });
+    if(bars.length){
+      const firstX=chart.timeScale().timeToCoordinate(bars[0].time);
+      const lastX=chart.timeScale().timeToCoordinate(bars[bars.length-1].time);
+      if(firstX!==null&&lastX!==null){
+        svgLine(firstX,0,lastX,0,'none',0);
+        svgPillLabel((firstX+lastX)/2-40,20,'Ghost Feed · '+count+' bars','#787b86');
+      }
+    }
     return;
   }
 
@@ -4621,6 +4692,7 @@ function bindEvents(){
       return;
     }
     if(e.target.closest('#csvImportBtn')){ openModal('csvImportModal'); return; }
+    if(e.target.closest('#compareBtn')){ toggleCompare(); return; }
     if(e.target.closest('#importIndicatorBtn')){ openModal('importIndicatorModal'); return; }
 
     const tab=e.target.closest('.tab');
@@ -4662,11 +4734,33 @@ function bindEvents(){
     if(action){
       if(action.dataset.action==='deleteAll') deleteAllDrawings();
       if(action.dataset.action==='lock') toggleLock();
+      if(action.dataset.action==='staydraw'){
+        State.stayInDrawingMode=!State.stayInDrawingMode;
+        renderTools();
+        showToast('Stay in Drawing Mode: '+(State.stayInDrawingMode?'ON':'OFF'),'info');
+        return;
+      }
       if(action.dataset.action==='deleteSelected' && State.selectedDrawingId) deleteDrawing(State.selectedDrawingId);
       if(action.dataset.action==='duplicate' && State.selectedDrawingId) duplicateDrawing(State.selectedDrawingId);
       if(action.dataset.action==='lockDrawing' && State.selectedDrawingId){
         const d = State.drawings.find(x=>String(x.id)===String(State.selectedDrawingId));
         if(d){ d.locked=!d.locked; renderDrawings(); renderDrawingsPanel(); showToast(d.locked?'🔒 Locked':'🔓 Unlocked','info'); }
+      }
+      if(action.dataset.action==='bringFront' && State.selectedDrawingId){
+        const idx=State.drawings.findIndex(x=>String(x.id)===String(State.selectedDrawingId));
+        if(idx>=0 && idx<State.drawings.length-1){
+          const d=State.drawings.splice(idx,1)[0];
+          State.drawings.push(d);
+          renderDrawings(); renderDrawingsPanel(); showToast('Brought to front','info');
+        }
+      }
+      if(action.dataset.action==='sendBack' && State.selectedDrawingId){
+        const idx=State.drawings.findIndex(x=>String(x.id)===String(State.selectedDrawingId));
+        if(idx>0){
+          const d=State.drawings.splice(idx,1)[0];
+          State.drawings.unshift(d);
+          renderDrawings(); renderDrawingsPanel(); showToast('Sent to back','info');
+        }
       }
       if(action.dataset.action==='editStyle' && State.selectedDrawingId) openStyleModal(State.selectedDrawingId);
       if(action.dataset.action==='deselect'){
@@ -4763,6 +4857,8 @@ function bindEvents(){
     $('#setUp').value=State.settings.up;
     $('#setDown').value=State.settings.down;
     $('#setGrid').value=String(State.settings.grid);
+    $('#setPriceScale').value=State.settings.priceScale||'normal';
+    $('#setCountdown').value=State.settings.countdown===false?'false':'true';
     openModal('settingsModal');
   });
 
@@ -4770,7 +4866,10 @@ function bindEvents(){
     State.settings.up=$('#setUp').value;
     State.settings.down=$('#setDown').value;
     State.settings.grid=$('#setGrid').value==='true';
+    State.settings.priceScale=$('#setPriceScale').value;
+    State.settings.countdown=$('#setCountdown').value==='true';
     applySettingsFromState();
+    applyPriceScaleMode();
     closeModal('settingsModal');
     showToast('Settings applied','success');
   });
@@ -4914,7 +5013,8 @@ function bindEvents(){
 
     if(e.ctrlKey && e.key==='s'){
       e.preventDefault();
-      saveLayout();
+      if(e.altKey) takeScreenshot(true);
+      else saveLayout();
     }
 
     if(e.ctrlKey && e.key==='z'){
@@ -4996,18 +5096,56 @@ function renderSymbolResults(query){
     : '<div class="empty">No symbols found</div>';
 }
 
-function takeScreenshot(){
+function toggleCompare(){
+  if(compareSeries){
+    try{chart.removeSeries(compareSeries);}catch(e){}
+    compareSeries=null;
+    compareData=[];
+    showToast('Comparison removed','info');
+    return;
+  }
+  const allSymbols={...SYMBOLS,...State.importedSymbols};
+  const candidates=Object.keys(allSymbols).filter(s=>s!==State.currentSymbol);
+  if(!candidates.length){showToast('No other symbols to compare','error');return;}
+  const sym=candidates[Math.floor(Math.random()*candidates.length)];
+  let data;
+  if(State.importedSymbols[sym]){
+    data=State.importedSymbols[sym].data;
+  }else{
+    const tf=State.currentTimeframe==='D'?1440:State.currentTimeframe==='W'?10080:parseInt(State.currentTimeframe,10);
+    data=generateOHLCV(sym,tf,500);
+  }
+  // Normalize to percentage change from first value
+  const first=data[0]?.close||1;
+  const normalized=data.map(d=>({time:d.time,value:((d.close-first)/first)*100}));
+  compareSeries=chart.addLineSeries({color:'#ff9800',lineWidth:1,title:sym,priceScaleId:'left',lineStyle:2});
+  compareSeries.priceScale().applyOptions({scaleMargins:{top:.1,bottom:.1}});
+  compareSeries.setData(normalized);
+  showToast('Comparing: '+sym,'success');
+}
+
+function takeScreenshot(toClipboard=false){
   try{
     const canvas=chart.takeScreenshot();
-    canvas.toBlob(blob=>{
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement('a');
-      a.href=url;
-      a.download=`${State.currentSymbol.replace('/','-')}_${State.currentTimeframe}_${Date.now()}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast('📸 Screenshot saved','success');
-    });
+    if(toClipboard){
+      canvas.toBlob(blob=>{
+        navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(()=>{
+          showToast('📸 Screenshot copied to clipboard','success');
+        }).catch(()=>{
+          showToast('Clipboard write failed','error');
+        });
+      });
+    }else{
+      canvas.toBlob(blob=>{
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');
+        a.href=url;
+        a.download=`${State.currentSymbol.replace('/','-')}_${State.currentTimeframe}_${Date.now()}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('📸 Screenshot saved','success');
+      });
+    }
   }catch(e){
     showToast('Screenshot failed','error');
   }
@@ -5062,7 +5200,22 @@ function liveUpdate(){
 
 function updateClock(){
   const d=new Date();
-  $('#statusClock').textContent='UTC '+d.toTimeString().split(' ')[0];
+  let clockText='UTC '+d.toTimeString().split(' ')[0];
+  
+  // Countdown to bar close
+  if(chartData.length && State.settings.countdown!==false){
+    const last=chartData[chartData.length-1];
+    const tf=State.currentTimeframe==='D'?86400:State.currentTimeframe==='W'?604800:parseInt(State.currentTimeframe,10)*60;
+    const nextBarTime=last.time+tf;
+    const remaining=nextBarTime-Date.now()/1000;
+    if(remaining>0){
+      const mins=Math.floor(remaining/60);
+      const secs=Math.floor(remaining%60);
+      clockText+=' · ⏱ '+String(mins).padStart(2,'0')+':'+String(secs).padStart(2,'0');
+    }
+  }
+  
+  $('#statusClock').textContent=clockText;
 }
 
 /* ================= INIT ================= */
