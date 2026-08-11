@@ -1217,14 +1217,29 @@ function calculate(data, settings) {
   // Return exactly:
   return {
     lines: [
-      // {name, color, width, data, priceScaleId?}
-      // priceScaleId: omit for overlay lines on the price scale;
-      //                use a unique string (e.g. 'rsi') for separate-scale studies like RSI/MACD
+      // {name, color, width, data, priceScaleId?, type?, pane?}
+      // priceScaleId: omit for overlay lines on the price axis;
+      //                use a unique string for separate-scale studies like RSI/MACD
+      // type: 'line' (default) | 'area' | 'histogram'
+      //       area: {topColor?, bottomColor?} default derived from color
+      //       histogram: {base?} bars start from this level (default 0)
+      // pane: true renders the line in its own TradingView-style sub-pane
+      //       below the chart (all pane lines of this indicator share one pane)
       {name:'SMA 20', color:settings.color, width:2, data:seriesArray}
     ],
     markers: [
       // TradingView-style markers on the main chart
       // {time, position:'aboveBar'|'belowBar'|'inBar', color, shape:'circle'|'square'|'arrowUp'|'arrowDown', text}
+    ],
+    bands: [
+      // Optional translucent background bands (exact fill between levels)
+      // {lower, upper, color?, priceScaleId?, pane?} — pane must match the lines' pane flag
+      // {lower:20, upper:80, color:'rgba(41,98,255,.08)', pane:true}
+    ],
+    levels: [
+      // Optional dashed level lines in the indicator's pane
+      // {price, title?, color?} — default color gray, dashed, like TradingView
+      // {price:70, title:'70'}
     ]
   };
 }
@@ -1323,8 +1338,15 @@ function validateImportedCode(){
 
     const lineCount = res.lines.length;
     const markerCount = Array.isArray(res.markers) ? res.markers.length : 0;
+    const bandCount = Array.isArray(res.bands) ? res.bands.length : 0;
+    const levelCount = Array.isArray(res.levels) ? res.levels.length : 0;
+    const paneCount = res.lines.filter(l => l.pane).length + (Array.isArray(res.bands) ? res.bands.filter(b => b.pane).length : 0);
     status.className = 'import-status ok';
-    status.textContent = 'Valid — '+fields.length+' setting(s), '+lineCount+' line(s), '+markerCount+' marker(s)';
+    status.textContent = 'Valid — '+fields.length+' setting(s), '+lineCount+' line(s)'
+      + (paneCount ? ', '+paneCount+' in sub-pane' : '')
+      + (bandCount ? ', '+bandCount+' band(s)' : '')
+      + (levelCount ? ', '+levelCount+' level(s)' : '')
+      + (markerCount ? ', '+markerCount+' marker(s)' : '');
     renderDynamicSettings(fields, '#indicatorSettingsDynamic');
   }catch(e){
     status.className = 'import-status err';
@@ -1449,17 +1471,67 @@ function executeCustomIndicator(ci){
 
     (customIndicatorSeries[ci.id] || []).forEach(s => { try{ chart.removeSeries(s); }catch(e){} });
     const created = [];
+    const allPanes = [];
+
+    // One dedicated sub-pane for the whole custom indicator when any line or band opts in.
+    const wantsPane = result.lines.some(l => l.pane) || (result.bands || []).some(b => b.pane);
+    const paneIndex = wantsPane ? nextIndicatorPaneIndex() : undefined;
+
     result.lines.forEach((line, idx) => {
-      const series = chart.addLineSeries({
+      const common = {
         color: line.color || '#2962ff',
         lineWidth: line.width || 2,
         title: line.name || (ci.name + ' ' + (idx + 1)),
-        priceScaleId: line.priceScaleId || ''
-      });
-      if(line.priceScaleId) series.priceScale().applyOptions({scaleMargins: {top: 0.75, bottom: 0}});
+        priceScaleId: line.pane ? ('cpn_' + ci.id) : (line.priceScaleId || '')
+      };
+      let series;
+      const type = line.type || 'line';
+      if(type === 'area'){
+        // Only hex colors can take an alpha suffix; pass rgba/other colors through unchanged
+        const withAlpha = (c, a) => /^#[0-9a-fA-F]{6}$/.test(c || '') ? c + a : c;
+        series = chart.addAreaSeries(Object.assign({}, common, {
+          topColor: line.topColor || withAlpha(common.color, '55'),
+          bottomColor: line.bottomColor || withAlpha(common.color, '00')
+        }), paneIndex);
+      }else if(type === 'histogram'){
+        series = chart.addHistogramSeries(Object.assign({}, common, {
+          base: line.base || 0,
+          lastValueVisible: false
+        }), paneIndex);
+      }else{
+        series = chart.addLineSeries(common, paneIndex);
+      }
+      if(line.pane){
+        series.priceScale().applyOptions({scaleMargins: {top: 0.1, bottom: 0.1}, autoScale: true});
+        allPanes.push(series);
+      }else if(line.priceScaleId){
+        series.priceScale().applyOptions({scaleMargins: {top: 0.75, bottom: 0}});
+      }
       series.setData(line.data || []);
       created.push(series);
     });
+
+    // TradingView-style background bands (exact fill via histogram base).
+    (result.bands || []).forEach((b, i) => {
+      const bandPane = b.pane ? paneIndex : undefined;
+      const bandSeries = addLevelBand({
+        lower: b.lower, upper: b.upper,
+        color: b.color || 'rgba(41,98,255,.08)',
+        priceScaleId: b.pane ? ('cpn_' + ci.id) : (b.priceScaleId || ''),
+        paneIndex: bandPane,
+        data: b.data
+      });
+      if(b.pane) bandSeries.priceScale().applyOptions({scaleMargins: {top: 0.1, bottom: 0.1}, autoScale: true});
+      created.push(bandSeries);
+    });
+
+    // Dashed level lines, attached to the last visible series of this indicator.
+    const anchor = created[created.length - 1];
+    (result.levels || []).forEach(lv => {
+      if(!anchor) return;
+      addLevelLine(anchor, lv.price, lv.title, lv.color || 'rgba(120,123,134,.5)');
+    });
+
     customIndicatorSeries[ci.id] = created;
     customMarkers[ci.id] = Array.isArray(result.markers) ? result.markers : [];
     applyCustomMarkers();
@@ -1471,6 +1543,11 @@ function executeCustomIndicator(ci){
 }
 
 // Markers from all active custom indicators are merged onto the main series
+// Markers from all active custom indicators are merged onto the main series.
+// v5 renders markers via the LightweightCharts.createSeriesMarkers plugin
+// (series.setMarkers was removed), and the plugin is re-created whenever
+// mainSeries is replaced (e.g. chart type switch).
+let customMarkerPlugin = null, markerPluginSeries = null;
 function applyCustomMarkers(){
   const all = [];
   State.customIndicators.forEach(ci => {
@@ -1479,7 +1556,13 @@ function applyCustomMarkers(){
     if(Array.isArray(m)) all.push(...m);
   });
   all.sort((a, b) => a.time - b.time);
-  try{ mainSeries.setMarkers(all); }catch(e){}
+  try{
+    if(!customMarkerPlugin || markerPluginSeries !== mainSeries){
+      customMarkerPlugin = LightweightCharts.createSeriesMarkers(mainSeries, []);
+      markerPluginSeries = mainSeries;
+    }
+    customMarkerPlugin.setMarkers(all);
+  }catch(e){}
 }
 
 function toggleCustomIndicator(id){
@@ -2688,6 +2771,50 @@ function nextIndicatorPaneIndex(){
   catch(e){ return 1; }
 }
 
+// =====================================================================
+// INDICATOR ARCHITECTURE (how indicator visuals are built)
+// ---------------------------------------------------------------------
+// Built-in registry : INDICATORS[] (id, name, group, desc, color, default settings)
+// State             : State.indicators[id] (bool) + State.indicatorSettings[id]
+// Dispatch          : applyIndicator(id) is a small if-chain that builds each
+//                     indicator. It stores its series in indicatorSeries[id]
+//                     (a series or an array of series).
+// Panes             : overlay indicators (SMA/EMA/BB/.../VWAP) stay in pane 0
+//                     on the price axis; separate-pane oscillators get a real
+//                     sub-pane index from nextIndicatorPaneIndex(). Empty panes
+//                     are auto-removed by v5 on removal.
+// Scale config      : series.priceScale().applyOptions({scaleMargins, autoScale})
+// Level lines       : series.createPriceLine(...) — dashed gray=rgba(120,123,134,.5)
+// Background bands  : addLevelBand() uses a histogram with base=lower level so the
+//                     fill is EXACTLY between the two levels (TradingView look).
+// Custom indicators : executeCustomIndicator(ci) runs user/LLM code returning
+//                     {lines, markers, bands?, levels?}; see INDICATOR_LLM_PROMPT
+//                     for the full contract.
+// Templates         : applyIndicatorTemplate(id) toggles preset bundles.
+// =====================================================================
+
+// TradingView-style translucent band exactly between two levels.
+// Implemented as a histogram whose base = lower level and value = upper level,
+// so the columns fill (lower..upper) with zero bar size. Points are generated
+// from chartData (or the provided data array).
+function addLevelBand({lower, upper, color='rgba(41,98,255,.08)', priceScaleId='', paneIndex, data}){
+  const series = chart.addHistogramSeries({
+    priceScaleId: priceScaleId || '',
+    lastValueVisible: false,
+    priceLineVisible: false,
+    base: lower,
+    color: color
+  }, paneIndex);
+  const src = data || chartData;
+  series.setData(src.map(d => ({time: d.time, value: upper})));
+  return series;
+}
+
+// Consistent TradingView-style dashed level line (gray, thin, dashed).
+function addLevelLine(series, price, title, color='rgba(120,123,134,.5)'){
+  return series.createPriceLine({price, color, lineWidth:1, lineStyle:2, axisLabelVisible:true, title:String(title ?? price)});
+}
+
 function applyIndicator(id){
   removeIndicator(id);
   const s = State.indicatorSettings[id];
@@ -2781,16 +2908,9 @@ function applyIndicator(id){
   if(id==='stoch'){
     const st=calcStochastic(chartData,s.k,s.d,s.smooth);
     const pi=nextIndicatorPaneIndex();
-    // Background shading between 20-80 (TradingView style) - separate pane
-    const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
-    const bgSeries=chart.addHistogramSeries({
-      priceScaleId:'stoch',
-      priceFormat:{type:'price'},
-      lastValueVisible:false,
-      priceLineVisible:false
-    }, pi);
+    // Background band between 20-80 (TradingView style - exact fill via histogram base)
+    const bgSeries=addLevelBand({lower:s.lower, upper:s.upper, color:'rgba(41,98,255,.08)', priceScaleId:'stoch', paneIndex:pi});
     bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    bgSeries.setData(bgData);
     // %K line - Blue (like TradingView)
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'%K',priceScaleId:'stoch'}, pi);
     kLine.setData(st.k);
@@ -2807,16 +2927,9 @@ function applyIndicator(id){
   if(id==='stochrsi'){
     const st=calcStochRSI(chartData,s.rsiPeriod,s.stochPeriod,s.smooth);
     const pi=nextIndicatorPaneIndex();
-    // Background shading between 0.20-0.80 (TradingView style) - separate pane
-    const bgData=st.k.map(d=>({time:d.time, value:s.upper, color:'rgba(41,98,255,.08)'}));
-    const bgSeries=chart.addHistogramSeries({
-      priceScaleId:'stochrsi',
-      priceFormat:{type:'price'},
-      lastValueVisible:false,
-      priceLineVisible:false
-    }, pi);
+    // Background band between 20-80 (TradingView style, 0-100 scale - exact fill via histogram base)
+    const bgSeries=addLevelBand({lower:s.lower, upper:s.upper, color:'rgba(41,98,255,.08)', priceScaleId:'stochrsi', paneIndex:pi});
     bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    bgSeries.setData(bgData);
     // %K line - Blue
     const kLine=chart.addLineSeries({color:'#2962ff',lineWidth:2,title:'StochRSI %K',priceScaleId:'stochrsi'}, pi);
     kLine.setData(st.k);
@@ -2848,16 +2961,9 @@ function applyIndicator(id){
   if(id==='williams'){
     const williamsData=calcWilliams(chartData,s.period);
     const pi=nextIndicatorPaneIndex();
-    // Background shading between -80 to -20 (TradingView style) - separate pane
-    const bgData=williamsData.map(d=>({time:d.time, value:-20, color:'rgba(41,98,255,.08)'}));
-    const bgSeries=chart.addHistogramSeries({
-      priceScaleId:'williams',
-      priceFormat:{type:'price'},
-      lastValueVisible:false,
-      priceLineVisible:false
-    }, pi);
+    // Background band between -80 to -20 (TradingView style - exact fill via histogram base)
+    const bgSeries=addLevelBand({lower:s.lower, upper:s.upper, color:'rgba(41,98,255,.08)', priceScaleId:'williams', paneIndex:pi});
     bgSeries.priceScale().applyOptions({scaleMargins:{top:0.05, bottom:0.05}, autoScale:true});
-    bgSeries.setData(bgData);
     // Williams %R line - Purple
     const series=chart.addLineSeries({color:'#9c27b0',lineWidth:2,title:'Williams %R '+s.period,priceScaleId:'williams'}, pi);
     series.setData(williamsData);
