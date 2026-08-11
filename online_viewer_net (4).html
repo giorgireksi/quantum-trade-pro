@@ -245,6 +245,18 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
 .import-hint summary{cursor:pointer;font-weight:600;color:var(--text2)}
 .hint-code{font-family:"JetBrains Mono",monospace;font-size:10.5px;line-height:1.55;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin:8px 0;white-space:pre-wrap;max-height:180px;overflow:auto;color:var(--muted)}
 .indicator-settings-dynamic{display:grid;gap:10px}
+.indicator-item.has-error{border-color:var(--red)}
+.err-badge{color:var(--red);background:rgba(239,83,80,.12)}
+.err-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.err-name{font-weight:700;font-size:13px}
+.err-loc{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--red)}
+.err-msg{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--red);background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.35);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
+.err-code{font-family:"JetBrains Mono",monospace;font-size:11px;line-height:1.6;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:auto;max-height:220px}
+.err-code-line{display:flex;gap:10px;padding:0 8px;white-space:pre}
+.err-line-no{color:var(--muted);user-select:none;min-width:26px;text-align:right;flex-shrink:0}
+.err-code-line.err-line{background:rgba(239,83,80,.18)}
+.err-code-line.err-line .err-line-no,.err-code-line.err-line code{color:var(--red);font-weight:700}
+.err-hint{font-size:10.5px;color:var(--muted);line-height:1.5}
 /* New drawing type styles */
 .anchoredvwap-label,.gannbox-label,.price-label-text{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600}
 /* Favorites toolbar */
@@ -434,6 +446,17 @@ textarea.input{font-family:"JetBrains Mono",monospace;font-size:11px;resize:vert
       <button class="btn" onclick="closeModal('importIndicatorModal')">Cancel</button>
       <button class="btn" id="importValidateBtn">Validate</button>
       <button class="btn primary" id="importApplyBtn">Import Indicator</button>
+    </div>
+  </div>
+</div>
+
+<!-- Indicator error detail (PineScript-console-style) -->
+<div class="modal-overlay" id="indicatorErrorModal">
+  <div class="modal wide">
+    <div class="modal-header"><span>⚠ Indicator Error</span><button class="icon-btn small" onclick="closeModal('indicatorErrorModal')">✕</button></div>
+    <div class="modal-body" id="errBox"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('indicatorErrorModal')">Close</button>
     </div>
   </div>
 </div>
@@ -1262,6 +1285,8 @@ RULES:
 - Lines may only use MathTA results or raw data values; no external libraries, no DOM, no require().
 - Filter out any Infinity/NaN values; they break rendering.
 - markers is optional (default []), lines is required and must be an array.
+- Errors are reported to the user with the exact line number, so keep the
+  code readable and avoid unnecessarily long lines.
 - Return the code as plain text, no markdown explanation.`;
 
 const IMPORT_EXAMPLE = `const SETTINGS = [
@@ -1318,6 +1343,45 @@ function initImportIndicator(){
   });
 }
 
+// ---- Indicator error reporting (PineScript-style: shows WHERE + WHAT) ----
+// User code runs as the body of a `new Function`; V8/Chromium report frames
+// inside that body as <anonymous>:L:C where L is offset from the user's
+// source lines. The offset is measured at runtime (it can differ per engine)
+// and defaults to the empirically verified 2 for V8.
+let errorLineOffset = null;
+function computeErrorLineOffset(){
+  try{
+    const code = 'function calculate(data, settings){\n  throw new Error("__QTP_LINE_PROBE__");\n}\n;return {calculate, SETTINGS: typeof SETTINGS !== "undefined" ? SETTINGS : []};';
+    const rt = new Function('data','settings','MathTA', code)([], {}, {});
+    rt.calculate([], {}, {});
+  }catch(e){
+    const m = /<anonymous>:(\d+):(\d+)/.exec(e.stack || '');
+    if(m) return parseInt(m[1], 10) - 2; // the probe throws on user line 2
+  }
+  return 2;
+}
+
+// Map an Error to {line, col, message} aiming at the user's own source.
+// The FIRST <anonymous> frame is the innermost throw site; when a MathTA
+// helper itself throws, that frame is the user's call into the helper.
+function parseIndicatorError(e){
+  const message = e && e.message ? String(e.message) : String(e);
+  if(!(e instanceof Error)) return {line:0, col:0, message};
+  if(errorLineOffset === null) errorLineOffset = computeErrorLineOffset();
+  const m = /<anonymous>:(\d+):(\d+)/.exec(e.stack || '');
+  if(m) return { line: Math.max(0, parseInt(m[1],10) - errorLineOffset), col: parseInt(m[2],10), message };
+  return { line:0, col:0, message };
+}
+function indicatorErrorLabel(p){
+  return (p.line ? 'Line ' + p.line + (p.col ? ', col ' + p.col + ': ' : ': ') : '') + p.message;
+}
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Persisted per-indicator error state: id -> {line, col, message, stack, code, at}
+let indicatorErrors = {};
+
 // Build a runnable {calculate, SETTINGS} from indicator code.
 // Strips markdown fences, tolerates extra whitespace. Never executes calculate() itself.
 function buildIndicatorRuntime(code, mathTA){
@@ -1326,7 +1390,13 @@ function buildIndicatorRuntime(code, mathTA){
     .replace(/```\s*$/,'')
     .trim();
   if(!clean) throw new Error('code is empty');
-  const fn = new Function('data','settings','MathTA', `${clean}\n;return {calculate, SETTINGS: typeof SETTINGS !== 'undefined' ? SETTINGS : []};`);
+  let fn;
+  try{
+    fn = new Function('data','settings','MathTA', `${clean}\n;return {calculate, SETTINGS: typeof SETTINGS !== 'undefined' ? SETTINGS : []};`);
+  }catch(e){
+    const p = parseIndicatorError(e);
+    throw new Error('Syntax error' + (p.line ? ' at line ' + p.line : '') + (p.col ? ', col ' + p.col : '') + ': ' + p.message);
+  }
   return fn([], {}, mathTA || {});
 }
 
@@ -1364,7 +1434,8 @@ function validateImportedCode(){
     renderDynamicSettings(fields, '#indicatorSettingsDynamic');
   }catch(e){
     status.className = 'import-status err';
-    status.textContent = e.message;
+    status.textContent = indicatorErrorLabel(parseIndicatorError(e));
+    renderDynamicSettings([], '#indicatorSettingsDynamic');
   }
 }
 
@@ -1380,8 +1451,8 @@ function importCustomIndicator(){
     fields = Array.isArray(runtime.SETTINGS) ? runtime.SETTINGS : [];
   }catch(e){
     status.className = 'import-status err';
-    status.textContent = e.message;
-    showToast('Import failed: '+e.message,'error');
+    status.textContent = indicatorErrorLabel(parseIndicatorError(e));
+    showToast('Import failed: '+indicatorErrorLabel(parseIndicatorError(e)),'error');
     return;
   }
 
@@ -1549,6 +1620,8 @@ function executeCustomIndicator(ci){
 
     customIndicatorSeries[ci.id] = created;
     customMarkers[ci.id] = Array.isArray(result.markers) ? result.markers : [];
+    delete indicatorErrors[ci.id];
+    renderIndicatorsPanel();
     applyCustomMarkers();
     syncIndicatorUI();
 
@@ -1559,8 +1632,11 @@ function executeCustomIndicator(ci){
     created = [];
     delete customMarkers[ci.id];
     applyCustomMarkers();
+    const parsed = parseIndicatorError(e);
+    indicatorErrors[ci.id] = { ...parsed, stack: e && e.stack ? String(e.stack) : '', code: ci.code, at: Date.now() };
+    renderIndicatorsPanel();
     console.error('Custom indicator error [' + ci.name + ']:', e);
-    showToast('Indicator error: ' + e.message, 'error');
+    showToast('Indicator error [' + ci.name + ']: ' + indicatorErrorLabel(parsed), 'error');
   }
 }
 
@@ -1598,6 +1674,7 @@ function toggleCustomIndicator(id){
     (customIndicatorSeries[id] || []).forEach(s => { try{ chart.removeSeries(s); }catch(e){} });
     delete customIndicatorSeries[id];
     delete customMarkers[id];
+    delete indicatorErrors[id];
     applyCustomMarkers();
     showToast(ci.name + ' disabled', 'warning');
   }
@@ -1636,10 +1713,39 @@ function removeCustomIndicator(id){
   delete customMarkers[id];
   delete State.indicators[id];
   State.customIndicators = State.customIndicators.filter(x => x.id !== id);
+  delete indicatorErrors[id];
   applyCustomMarkers();
   renderIndicatorsPanel();
   syncIndicatorUI();
   showToast(ci.name + ' removed', 'info');
+}
+
+function showIndicatorError(id){
+  const err = indicatorErrors[id];
+  if(!err) return;
+  const ci = State.customIndicators.find(x => x.id === id);
+  $('#errBox').innerHTML = `
+    <div class="err-head">
+      <div class="err-name">${escapeHTML(ci ? ci.name : id)}</div>
+      ${err.line ? `<div class="err-loc">Line ${err.line}${err.col ? ', col ' + err.col : ''}</div>` : ''}
+    </div>
+    <div class="err-msg">${escapeHTML(err.message)}</div>
+    ${err.code && err.line ? renderErrorSnippet(err.code, err.line) : ''}
+    ${err.stack ? `<details class="import-hint" open><summary>Stack trace</summary><div class="hint-code" style="max-height:150px">${escapeHTML(err.stack)}</div></details>` : ''}
+    <div class="err-hint">💡 Fix the indicator code, then re-import it. If your code was generated by an LLM, paste this error text back and it can pinpoint the fix.</div>`;
+  openModal('indicatorErrorModal');
+}
+
+// Renders a small code window around the failing line, highlighted like a compiler diagnostic.
+function renderErrorSnippet(code, line){
+  const lines = String(code||'').split('\n');
+  const start = Math.max(0, line-4), end = Math.min(lines.length, line+3);
+  let html = '<div class="err-code">';
+  for(let i=start;i<end;i++){
+    const n = i+1;
+    html += `<div class="err-code-line${n===line?' err-line':''}"><span class="err-line-no">${n}</span><code>${escapeHTML(lines[i] || ' ')}</code></div>`;
+  }
+  return html + '</div>';
 }
 
 function openCustomIndicatorSettings(id){
@@ -1719,12 +1825,13 @@ function renderIndicatorsPanel(){
   let html = Object.entries(groups).map(([g,items]) => `
     <div class="section-title">${g}</div>
     ${items.map(i => `
-      <div class="indicator-item ${State.indicators[i.id]?'active':''}" data-ind="${i.id}">
+      <div class="indicator-item ${State.indicators[i.id]?'active':''}${indicatorErrors[i.id]?' has-error':''}" data-ind="${i.id}">
         <div class="toggle ${State.indicators[i.id]?'on':''}"></div>
         <div class="meta">
           <div class="name">${i.name}</div>
           <div class="desc">${i.desc}</div>
         </div>
+        ${indicatorErrors[i.id]?`<button class="icon-btn small err-badge" data-ind-err="${i.id}" title="Error">⚠</button>`:''}
         <button class="icon-btn small" data-ind-set="${i.id}" title="Settings">⚙</button>
       </div>
     `).join('')}
@@ -1732,12 +1839,13 @@ function renderIndicatorsPanel(){
 
   if(State.customIndicators.length){
     html += `<div class="section-title">Custom (imported)</div>` + State.customIndicators.map(ci => `
-      <div class="indicator-item ${State.indicators[ci.id]!==false?'active':''}" data-cind="${ci.id}">
+      <div class="indicator-item ${State.indicators[ci.id]!==false?'active':''}${indicatorErrors[ci.id]?' has-error':''}" data-cind="${ci.id}">
         <div class="toggle ${State.indicators[ci.id]!==false?'on':''}"></div>
         <div class="meta">
           <div class="name">${ci.name}</div>
           <div class="desc">${(ci.settingsSchema||[]).length} setting(s)</div>
         </div>
+        ${indicatorErrors[ci.id]?`<button class="icon-btn small err-badge" data-cind-err="${ci.id}" title="Error">⚠</button>`:''}
         <button class="icon-btn small" data-cind-set="${ci.id}" title="Settings">⚙</button>
         <button class="icon-btn small danger" data-cind-del="${ci.id}" title="Remove">✕</button>
       </div>
@@ -5850,6 +5958,10 @@ function bindEvents(){
     const ind=e.target.closest('[data-ind]');
     if(ind) return toggleIndicator(ind.dataset.ind);
 
+    const cindErr=e.target.closest('[data-cind-err]');
+    if(cindErr) return showIndicatorError(cindErr.dataset.cindErr);
+    const indErr=e.target.closest('[data-ind-err]');
+    if(indErr) return showIndicatorError(indErr.dataset.indErr);
     const cindSet=e.target.closest('[data-cind-set]');
     if(cindSet) return openCustomIndicatorSettings(cindSet.dataset.cindSet);
     const cindDel=e.target.closest('[data-cind-del]');
