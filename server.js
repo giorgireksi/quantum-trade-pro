@@ -93,6 +93,7 @@ function providerHeaders(baseUrl, key){
   // Deliberately do not add OpenCode/browser attribution headers. NVIDIA's
   // generated Python example uses only Authorization + Accept, so hosted NIM
   // requests from this app must match that canonical shape.
+  return headers;
 }
 
 function messageText(content){
