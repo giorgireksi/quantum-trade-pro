@@ -24,10 +24,10 @@ function apiRoots(baseUrl){
   const raw = String(baseUrl || '').trim().replace(/\/+$/, '');
   if(!raw) return [];
   if(/\/chat\/completions$/i.test(raw)) return [raw.replace(/\/chat\/completions$/i, '')];
-  const roots = [raw];
-  if(!/\/v1$/i.test(raw)) roots.push(raw + '/v1');
-  if(!/\/api\/v1$/i.test(raw)) roots.push(raw + '/api/v1');
-  if(!/\/api$/i.test(raw)) roots.push(raw + '/api');
+  // An explicit API root must be used exactly as entered. In particular,
+  // https://api.cline.bot/api/v1 must never become /api/v1/api/v1 or /api/v1/api.
+  if(/\/(?:api\/)?v1$/i.test(raw) || /\/api$/i.test(raw)) return [raw];
+  const roots = [raw, raw + '/v1', raw + '/api/v1', raw + '/api'];
   return [...new Set(roots)];
 }
 
@@ -83,7 +83,11 @@ async function callProvider(baseUrl, model, apiKeys, messages, temperature){
         method: 'POST', headers,
         body: JSON.stringify({ model, messages, temperature: temperature ?? 0.2 })
       });
-      return result.body;
+      // Some OpenAI-compatible gateways wrap the completion in {data: ...}.
+      // Normalize that here so the browser always receives choices at top level.
+      const body = result.body && result.body.data && result.body.data.choices
+        ? result.body.data : result.body;
+      return body;
     }catch(e){
       lastErr = e;
       if(!/HTTP (401|403|429|500|502|503|504)/.test(String(e && e.message))) break;
