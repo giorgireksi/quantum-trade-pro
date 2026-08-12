@@ -124,6 +124,11 @@ user imports it or the platform explicitly confirms the update.
 `;
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
+  const extensionDir = path.join(workspaceRoot,'.pi','extensions');
+  fs.mkdirSync(extensionDir,{recursive:true});
+  const extensionSource = path.join(appRoot,'qpro-pi-extension.ts');
+  const extensionTarget = path.join(extensionDir,'qpro-tools.ts');
+  if(fs.existsSync(extensionSource)) fs.copyFileSync(extensionSource,extensionTarget);
   const agents = path.join(workspaceRoot,'AGENTS.md');
   if(!fs.existsSync(agents)) fs.writeFileSync(agents, [
     '# QPRO Pi Indicator Project', '',
@@ -262,11 +267,20 @@ async function controlPiAgent(payload){
     await entry.session.compact(String(payload.text || '') || undefined);
     return {ok:true,action,sessionId:entry.session.sessionId};
   }
+  if(!active && ['setModel','setThinking','sessionInfo'].includes(action)){
+    const entry=await sessionForPayload(payload);
+    if(action==='setModel'){ const model=resolveNativeModel(entry.runtime,payload.model); await entry.session.setModel(model); entry.model=model; entry.protocol=model.api; return {ok:true,action,model:model.provider+'/'+model.id}; }
+    if(action==='setThinking'){ entry.session.setThinkingLevel(String(payload.level || 'medium')); return {ok:true,action,thinking:entry.session.thinkingLevel}; }
+    return {ok:true,action,sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,model:entry.model && entry.model.provider+'/'+entry.model.id,thinking:entry.session.thinkingLevel,messages:entry.session.messages.length,activeTools:entry.session.getActiveToolNames()};
+  }
   if(!active) return {ok:false,error:'No active Pi run for this conversation'};
   if(action==='abort'){active.stopRequested=true;await active.entry.session.abort();return {ok:true,action};}
   if(action==='steer'){await active.entry.session.steer(String(payload.text || ''));return {ok:true,action};}
   if(action==='followUp'){await active.entry.session.followUp(String(payload.text || ''));return {ok:true,action};}
   if(action==='compact'){await active.entry.session.compact(String(payload.text || '') || undefined);return {ok:true,action};}
+  if(action==='setModel'){ const model=resolveNativeModel(active.entry.runtime,payload.model); await active.entry.session.setModel(model); active.entry.model=model; active.entry.protocol=model.api; return {ok:true,action,model:model.provider+'/'+model.id}; }
+  if(action==='setThinking'){ active.entry.session.setThinkingLevel(String(payload.level || 'medium')); return {ok:true,action,thinking:active.entry.session.thinkingLevel}; }
+  if(action==='sessionInfo'){ return {ok:true,action,sessionId:active.entry.session.sessionId,sessionFile:active.entry.session.sessionFile,model:active.entry.model && active.entry.model.provider+'/'+active.entry.model.id,thinking:active.entry.session.thinkingLevel,messages:active.entry.session.messages.length,activeTools:active.entry.session.getActiveToolNames()}; }
   throw new Error('Unknown Pi control action: '+action);
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }

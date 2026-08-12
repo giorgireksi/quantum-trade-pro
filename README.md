@@ -55,3 +55,5 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 - Pi's QPRO workspace and persistent sessions live under `.qpro/` in this project. Models, providers, authentication, settings, skills, and extensions come directly from the native Pi CLI under `~/.pi/agent/`. QPRO sessions and indicator files do not mix with other projects.
 - QPRO now has one AI path: native Pi CLI. The former custom provider/API-key/CORS adapter is no longer used or served by `server.js`.
 - The Pi chat uses SSE streaming with live assistant deltas, tool activity, compaction/retry lifecycle events, and `/api/pi/control` actions for Stop, Steer, Follow-up, and Compact. The browser is a Pi-style client over the native SDK session rather than a blocking chatbot.
+- A project-local `qpro-pi-extension.ts` adds QPRO plan/checkpoint tools and `/qpro-status`/`/qpro-plan` commands. It is copied into `.qpro/pi-workspace/.pi/extensions/`, so it affects only QPRO and not other Pi projects.
+- The embedded UI exposes thinking-level selection, native model controls, plan progress, session metadata, and the loaded Pi extension tools.
