@@ -65,8 +65,14 @@ const server = http.createServer(async (req, res) => {
     let payload;
     try{ payload = JSON.parse(await readBody(req)); }
     catch(_){ return json(res, 400, {error:'bad json'}); }
-    try{ return json(res, 200, await piAgent.controlPiAgent(payload || {})); }
-    catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
+    try{
+      const action=String(payload?.action || '');
+      if(action==='approve' || action==='reject' || action==='answer'){
+        const value=action==='answer' ? payload.answer : action;
+        return json(res, 200, piAgent.resolveApproval(payload.approvalId,value));
+      }
+      return json(res, 200, await piAgent.controlPiAgent(payload || {}));
+    }catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
   }
 
   // Kept as a compatibility endpoint for local tests; the browser uses the

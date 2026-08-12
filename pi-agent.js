@@ -119,8 +119,7 @@ Important browser functions:
 - buildMathTA: available technical-analysis helpers
 - buildPiSystemPrompt: optional user instructions sent to Pi
 
-Do not bypass the browser validator or claim that a file is applied until the
-user imports it or the platform explicitly confirms the update.
+Before consequential actions, use qpro_request_approval and wait for the user's decision. Use qpro_ask_user when an implementation choice is genuinely ambiguous. Do not bypass the browser validator or claim that a file is applied until the user imports it or the platform explicitly confirms the update.
 `;
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
@@ -142,7 +141,9 @@ function ensureWorkspace(){
     '1. Read INDICATOR_CONTRACT.md before creating or changing an indicator.',
     '2. Inspect related indicator files and use the coding tools normally.',
     '3. Validate the code against the platform contract before recommending import.',
-    '4. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
+    '4. Before consequential actions, use qpro_request_approval and wait for the user decision.',
+    '5. Use qpro_ask_user when a meaningful design choice is ambiguous.',
+    '6. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
   ].join('\\n'));
   const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
   if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
@@ -221,7 +222,7 @@ async function streamPiAgent(payload, res){
       if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{delta}); }
       else if(ae?.type==='thinking_start') send('activity',{message:'Pi is reasoning…'});
       else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
-    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool'}; toolEvents.push(item); send('tool_start',{tool:item.tool}); }
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
     else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
     else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); send('tool_end',{tool:item.tool,error:item.error}); }
     else if(event.type==='agent_start') send('agent_start');
@@ -283,5 +284,16 @@ async function controlPiAgent(payload){
   if(action==='sessionInfo'){ return {ok:true,action,sessionId:active.entry.session.sessionId,sessionFile:active.entry.session.sessionFile,model:active.entry.model && active.entry.model.provider+'/'+active.entry.model.id,thinking:active.entry.session.thinkingLevel,messages:active.entry.session.messages.length,activeTools:active.entry.session.getActiveToolNames()}; }
   throw new Error('Unknown Pi control action: '+action);
 }
+function resolveApproval(approvalId, value){
+  const safe=String(approvalId || '').replace(/[^a-zA-Z0-9_-]/g,'_');
+  if(!safe) throw new Error('approvalId is required');
+  const file=path.join(workspaceRoot,'.qpro-approval-'+safe+'.json');
+  if(!fs.existsSync(file)) throw new Error('Approval request is no longer pending');
+  let current={}; try{current=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){}
+  if(current.type==='question') current.answer=value;
+  else current.decision=value === 'approve' ? 'approve' : 'reject';
+  fs.writeFileSync(file,JSON.stringify(current,null,2));
+  return {ok:true,approvalId:safe};
+}
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,resolveApproval};
