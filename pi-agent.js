@@ -92,6 +92,34 @@ async function nativePiModels(){
   const runtime=await pi.ModelRuntime.create();
   return (await runtime.getAvailable()).map(m=>({provider:m.provider,id:m.id,name:m.name,reasoning:!!m.reasoning,input:m.input}));
 }
+const QPRO_ARCHITECTURE = `# QPRO architecture for indicator work
+
+Quantum Trade Pro is a single-file browser trading platform served by server.js.
+The browser owns chart state and rendering; Pi owns coding assistance. The
+browser sends symbol, timeframe, selected indicator notes/code, and chat to
+/api/pi/chat. The Node backend creates a native Pi SDK AgentSession and returns
+its response plus workspace file snapshots and tool activity.
+
+Indicator lifecycle:
+1. Pi reads AGENTS.md and INDICATOR_CONTRACT.md.
+2. Pi creates or edits indicators/*.js in this workspace using normal coding tools.
+3. The browser receives the changed file and extracts QPRO_CODE.
+4. The browser validates with buildIndicatorRuntime(), performs a dry run against
+   chartData, and only then offers Import or updates an existing indicator.
+5. executeCustomIndicator() renders lines, panes, bands, levels, markers, and
+   bar colors. State.customIndicators and workspace persistence retain the result.
+
+Important browser functions:
+- buildIndicatorRuntime / validateImportedCode: syntax and contract validation
+- executeCustomIndicator: calculation and Lightweight Charts rendering
+- aiImportMessage: validated import/update boundary
+- State.customIndicators: saved custom indicator definitions
+- buildMathTA: available technical-analysis helpers
+- buildPiSystemPrompt: optional user instructions sent to Pi
+
+Do not bypass the browser validator or claim that a file is applied until the
+user imports it or the platform explicitly confirms the update.
+`;
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
   const agents = path.join(workspaceRoot,'AGENTS.md');
@@ -109,6 +137,8 @@ function ensureWorkspace(){
     '3. Validate the code against the platform contract before recommending import.',
     '4. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
   ].join('\\n'));
+  const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
+  if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
   const contract = path.join(workspaceRoot,'INDICATOR_CONTRACT.md');
   if(!fs.existsSync(contract)) fs.writeFileSync(contract,INDICATOR_CONTRACT);
   const readme = path.join(workspaceRoot,'README.md');
@@ -134,10 +164,18 @@ async function createSession(payload){
   const runtime=await pi.ModelRuntime.create();
   const model=resolveNativeModel(runtime,payload.piModel);
   const protocol=model.api;
-  const loader=new pi.DefaultResourceLoader({cwd:workspaceRoot,agentDir:agentRoot,systemPromptOverride:()=>String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\n'+INDICATOR_CONTRACT+'\n\nYou are operating inside the isolated QPRO indicator workspace. Use your coding tools normally, but never access or modify paths outside the workspace.'});
+  const settingsManager=pi.SettingsManager.create(workspaceRoot,agentRoot);
+  const loader=new pi.DefaultResourceLoader({
+    cwd:workspaceRoot,
+    agentDir:agentRoot,
+    settingsManager,
+    // Preserve Pi CLI's native system prompt; QPRO is an appended project
+    // instruction layer, not a replacement for Pi's tool/compaction prompt.
+    appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\nYou are operating inside the QPRO indicator workspace. Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md when relevant. Use your Pi coding tools normally. Do not claim a chart change is applied until the platform validator/import boundary confirms it.']
+  });
   await loader.reload();
   const sessionManager=pi.SessionManager.continueRecent(workspaceRoot,safeChatDir(payload));
-  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
+  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
   return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
 }
 async function runPiAgent(payload){
@@ -155,7 +193,7 @@ async function runPiAgent(payload){
     let answer=textParts.join('');
     if(!answer){ for(let i=(entry.session.messages || []).length-1;i>=0;i--){ const m=entry.session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)){answer=textBlock(m.content);break;} } }
     if(!answer) throw new Error('Pi completed without an assistant response');
-    return {content:answer,agent:'pi',protocol:entry.protocol,tools:events,files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};
+    return {content:answer,agent:'pi',protocol:entry.protocol,tools:events,files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.agent?.state?.compaction || null};
   }finally{unsubscribe();}
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
