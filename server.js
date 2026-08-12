@@ -259,6 +259,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Return the provider's live model catalog to the settings UI.
+  if(req.method === 'POST' && req.url === '/api/ai/models'){
+    let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, { error: 'bad json' }); }
+    try{
+      const kind = detectProtocol(p.baseUrl, p.protocol || 'auto');
+      const token = cleanApiKey(p.apiKey);
+      if(kind === 'gemini'){
+        const root = String(p.baseUrl || '').replace(/\/+$/, '');
+        const r = await fetch(root + '/models?key=' + encodeURIComponent(token), { headers: {'Accept':'application/json'} });
+        const body = await r.json().catch(()=>({}));
+        const models = Array.isArray(body.models) ? body.models.map(x => String(x.name || '').replace(/^models\//, '')).filter(Boolean) : [];
+        return json(res, r.status, { ok: r.ok, models });
+      }
+      const result = await providerRequest(p.baseUrl, '/models', {
+        method: 'GET', headers: kind === 'anthropic' ? {'x-api-key': token, 'anthropic-version':'2023-06-01'} : providerHeaders(p.baseUrl, token)
+      });
+      const raw = result.body && Array.isArray(result.body.data) ? result.body.data : [];
+      const models = raw.map(x => typeof x === 'string' ? x : x && x.id).filter(Boolean).map(String).sort();
+      return json(res, 200, { ok: true, models, url: result.url });
+    }catch(e){ return json(res, 502, { ok: false, error: String((e && e.message) || e) }); }
+  }
+
   // Test-connection helper (hits the provider's /models from the server side).
   if(req.method === 'POST' && req.url === '/api/ai/test'){
     let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, { error: 'bad json' }); }
