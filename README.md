@@ -7,6 +7,15 @@ The browser talks to your own machine (same origin → no CORS at all), and your
 machine talks to your AI provider directly. Your API key never leaves your
 computer.
 
+For separate open and close actions:
+
+```bash
+./open_qpro.sh          # starts the server and opens the browser
+./stop_qpro.sh          # stops the server
+```
+
+The original `qpro.sh` toggle is also available if preferred.
+
 ```bash
 node server.js          # → http://localhost:8080
 # or:  PORT=9000 node server.js
