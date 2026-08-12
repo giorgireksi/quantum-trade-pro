@@ -188,6 +188,19 @@ async function callGemini(baseUrl, model, key, messages, temperature){
   return { choices: [{ message: { role: 'assistant', content: out.map(x => x.text || '').join('') } }] };
 }
 
+async function diagnoseNvidia403(baseUrl, key, original){
+  try{
+    if(new URL(String(baseUrl)).hostname !== 'integrate.api.nvidia.com') return original;
+    const probe = await providerRequest(baseUrl, '/models', { method: 'GET', headers: providerHeaders(baseUrl, key) });
+    if(probe && probe.response && probe.response.ok){
+      return new Error(String(original.message) + ' NVIDIA /models accepts this key, but /chat/completions is forbidden. The key/account lacks hosted inference or Public API Endpoints permission, or this model is not enabled for the account.');
+    }
+  }catch(probeErr){
+    return new Error(String(original.message) + ' NVIDIA /models also rejected this key. The key is invalid, revoked, from the wrong NVIDIA service, or its organization lacks hosted API permission.');
+  }
+  return original;
+}
+
 // Adapter layer: one normalized result for the major provider protocols.
 async function callProvider(baseUrl, protocol, model, apiKeys, messages, temperature){
   const keys = (Array.isArray(apiKeys) && apiKeys.length) ? apiKeys : [null];
@@ -204,6 +217,9 @@ async function callProvider(baseUrl, protocol, model, apiKeys, messages, tempera
       lastErr = e;
       if(!/HTTP (401|403|429|500|502|503|504)/.test(String(e && e.message))) break;
     }
+  }
+  if(lastErr && /HTTP 403/.test(String(lastErr.message)) && keys[0]){
+    throw await diagnoseNvidia403(baseUrl, keys[0], lastErr);
   }
   throw lastErr || new Error('All API keys failed');
 }
