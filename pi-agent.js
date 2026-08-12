@@ -20,6 +20,7 @@ const sessionRoot = path.join(appData, 'pi-sessions');
 const tempRoot = path.join(os.tmpdir(), 'quantum-trade-pro-pi-models');
 for (const dir of [workspaceRoot, agentRoot, sessionRoot, tempRoot]) fs.mkdirSync(dir, {recursive:true});
 const sessions = new Map();
+const activeChats = new Map();
 
 const INDICATOR_CONTRACT = `# Quantum Trade Pro indicator workspace
 
@@ -97,8 +98,9 @@ const QPRO_ARCHITECTURE = `# QPRO architecture for indicator work
 Quantum Trade Pro is a single-file browser trading platform served by server.js.
 The browser owns chart state and rendering; Pi owns coding assistance. The
 browser sends symbol, timeframe, selected indicator notes/code, and chat to
-/api/pi/chat. The Node backend creates a native Pi SDK AgentSession and returns
-its response plus workspace file snapshots and tool activity.
+/api/pi/stream. The Node backend creates a native Pi SDK AgentSession and
+streams response, tool activity, compaction, retry, and lifecycle events. The
+/api/pi/control endpoint handles stop, steer, follow-up, and compaction.
 
 Indicator lifecycle:
 1. Pi reads AGENTS.md and INDICATOR_CONTRACT.md.
@@ -182,23 +184,78 @@ async function createSession(payload){
   session.setActiveToolsByName(session.getAllTools().map(tool => tool.name));
   return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
 }
-async function runPiAgent(payload){
-  const id=sessionKey(payload); let entry=sessions.get(id); if(!entry){entry=await createSession(payload);sessions.set(id,entry);}
-  const events=[],textParts=[]; const unsubscribe=entry.session.subscribe(event=>{
-    if(event.type==='tool_execution_start') events.push({type:'tool_start',tool:event.toolName});
-    if(event.type==='tool_execution_end') events.push({type:'tool_end',tool:event.toolName,error:!!event.isError});
-    if(event.type==='message_update' && event.assistantMessageEvent?.type==='text_delta') textParts.push(event.assistantMessageEvent.delta || '');
+function sessionForPayload(payload){
+  const id=sessionKey(payload); let entry=sessions.get(id);
+  return entry ? Promise.resolve(entry) : createSession(payload).then(created=>{sessions.set(id,created);return created;});
+}
+function makePrompt(entry,payload){
+  const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+payload.workspaceContext:'';
+  const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
+  return (entry.initialized ? textBlock(latest && latest.content) : promptWithHistory(payload.messages)) + workspace + '\n\nUse the workspace tools when useful. If you create or modify an indicator, save it under indicators/ and report the relative path.';
+}
+function finalAssistantText(session, streamed){
+  if(streamed) return streamed;
+  for(let i=(session.messages || []).length-1;i>=0;i--){ const m=session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)) return textBlock(m.content); }
+  return '';
+}
+async function streamPiAgent(payload, res){
+  const chatId=String(payload.chatId || 'default');
+  if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
+  const entry=await sessionForPayload(payload);
+  const textParts=[]; const toolEvents=[]; let closed=false;
+  const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
+  const unsubscribe=entry.session.subscribe(event=>{
+    if(event.type==='message_update'){
+      const ae=event.assistantMessageEvent;
+      if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{delta}); }
+      else if(ae?.type==='thinking_start') send('activity',{message:'Pi is reasoning…'});
+      else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool'}; toolEvents.push(item); send('tool_start',{tool:item.tool}); }
+    else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
+    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); send('tool_end',{tool:item.tool,error:item.error}); }
+    else if(event.type==='agent_start') send('agent_start');
+    else if(event.type==='agent_end') send('agent_end');
+    else if(event.type==='turn_start') send('turn_start');
+    else if(event.type==='turn_end') send('turn_end');
+    else if(event.type==='compaction_start') send('compaction_start',{message:'Pi is compacting context…'});
+    else if(event.type==='compaction_end') send('compaction_end',{message:'Context compaction complete'});
+    else if(event.type==='auto_retry_start') send('retry_start',{message:'Pi is retrying the provider request…'});
+    else if(event.type==='auto_retry_end') send('retry_end');
+    else if(event.type==='queue_update') send('queue_update',{steering:event.steering || 0,followUp:event.followUp || 0});
   });
+  activeChats.set(chatId,{entry,payload,send,stopRequested:false});
+  res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });
+  send('session_start',{sessionId:entry.session.sessionId,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
   try{
-    const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+payload.workspaceContext:'';
-    const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
-    const prompt=(entry.initialized?textBlock(latest && latest.content):promptWithHistory(payload.messages))+workspace+'\n\nUse the workspace tools when useful. If you create or modify an indicator, save it under indicators/ and report the relative path.';
-    await entry.session.prompt(prompt); entry.initialized=true;
-    let answer=textParts.join('');
-    if(!answer){ for(let i=(entry.session.messages || []).length-1;i>=0;i--){ const m=entry.session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)){answer=textBlock(m.content);break;} } }
-    if(!answer) throw new Error('Pi completed without an assistant response');
-    return {content:answer,agent:'pi',protocol:entry.protocol,tools:events,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false};
-  }finally{unsubscribe();}
+    await entry.session.prompt(makePrompt(entry,payload)); entry.initialized=true;
+    const content=finalAssistantText(entry.session,textParts.join(''));
+    if(!content) throw new Error('Pi completed without an assistant response');
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false});
+  }catch(error){
+    const active=activeChats.get(chatId);
+    if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
+    else send('error',{error:String(error && error.message || error)});
+  }finally{
+    unsubscribe(); activeChats.delete(chatId); closed=true;
+    if(!res.destroyed) res.end();
+  }
+}
+async function runPiAgent(payload){
+  let result;
+  const fake={write(){},destroyed:false,end(){}};
+  // Compatibility helper for non-stream callers/tests; the browser uses SSE.
+  const entry=await sessionForPayload(payload); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  try{await entry.session.prompt(makePrompt(entry,payload));entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
+}
+async function controlPiAgent(payload){
+  const active=activeChats.get(String(payload.chatId || 'default'));
+  if(!active) return {ok:false,error:'No active Pi run for this conversation'};
+  const action=String(payload.action || '');
+  if(action==='abort'){active.stopRequested=true;await active.entry.session.abort();return {ok:true,action};}
+  if(action==='steer'){await active.entry.session.steer(String(payload.text || ''));return {ok:true,action};}
+  if(action==='followUp'){await active.entry.session.followUp(String(payload.text || ''));return {ok:true,action};}
+  if(action==='compact'){await active.entry.session.compact(String(payload.text || '') || undefined);return {ok:true,action};}
+  throw new Error('Unknown Pi control action: '+action);
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings};

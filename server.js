@@ -38,18 +38,40 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if(req.method === 'POST' && req.url === '/api/pi/chat'){
+  if(req.method === 'POST' && req.url === '/api/pi/stream'){
     let payload;
     try{ payload = JSON.parse(await readBody(req)); }
     catch(_){ return json(res, 400, {error:'bad json'}); }
     try{
-      const result = await piAgent.runPiAgent(payload || {});
-      console.log(new Date().toISOString(), 'pi/chat ok model=' + (payload.piModel || 'Pi CLI default'));
-      return json(res, 200, result);
+      res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
+      res.write(': pi-stream\n\n');
+      await piAgent.streamPiAgent(payload || {}, res);
+      console.log(new Date().toISOString(), 'pi/stream complete model=' + (payload.piModel || 'Pi CLI default'));
     }catch(error){
-      console.log(new Date().toISOString(), 'pi/chat err', error && error.message);
-      return json(res, 502, {error:String(error && error.message || error)});
+      console.log(new Date().toISOString(), 'pi/stream err', error && error.message);
+      if(!res.headersSent) return json(res, 502, {error:String(error && error.message || error)});
+      res.write('event: error\\ndata: '+JSON.stringify({type:'error',error:String(error && error.message || error)})+'\\n\\n');
+      res.end();
     }
+    return;
+  }
+
+  if(req.method === 'POST' && req.url === '/api/pi/control'){
+    let payload;
+    try{ payload = JSON.parse(await readBody(req)); }
+    catch(_){ return json(res, 400, {error:'bad json'}); }
+    try{ return json(res, 200, await piAgent.controlPiAgent(payload || {})); }
+    catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
+  }
+
+  // Kept as a compatibility endpoint for local tests; the browser uses the
+  // streaming endpoint above.
+  if(req.method === 'POST' && req.url === '/api/pi/chat'){
+    let payload;
+    try{ payload = JSON.parse(await readBody(req)); }
+    catch(_){ return json(res, 400, {error:'bad json'}); }
+    try{ return json(res, 200, await piAgent.runPiAgent(payload || {})); }
+    catch(error){ return json(res, 502, {error:String(error && error.message || error)}); }
   }
 
   if(req.method === 'GET' && (req.url === '/' || req.url === '/index.html')){
