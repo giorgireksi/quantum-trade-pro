@@ -57,3 +57,5 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 - The Pi chat uses SSE streaming with live assistant deltas, tool activity, compaction/retry lifecycle events, and `/api/pi/control` actions for Stop, Steer, Follow-up, and Compact. The browser is a Pi-style client over the native SDK session rather than a blocking chatbot.
 - A project-local `qpro-pi-extension.ts` adds QPRO plan/checkpoint tools and `/qpro-status`/`/qpro-plan` commands. It is copied into `.qpro/pi-workspace/.pi/extensions/`, so it affects only QPRO and not other Pi projects.
 - The embedded UI exposes thinking-level selection, native model controls, plan progress, session metadata, and the loaded Pi extension tools.
+- Native session management is available through the slash palette: `/new`, `/resume`, `/fork`, `/clone`, `/tree`, and `/session`. `/resume` lists persisted QPRO Pi sessions; `/session` exposes entry IDs for branching/tree navigation; the backend uses Pi SessionManager APIs for replacement and branching.
+- Risky built-in operations are automatically intercepted by the QPRO extension and require browser approval, while safe indicator edits remain frictionless.

@@ -30,6 +30,10 @@ const server = http.createServer(async (req, res) => {
     try{ return json(res, 200, {ok:true, commands:await piAgent.nativePiCommands({chatId:'command-catalog'})}); }
     catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
   }
+  if(req.method === 'GET' && req.url === '/api/pi/sessions'){
+    try{ return json(res, 200, {ok:true, sessions:await piAgent.nativePiSessions()}); }
+    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
+  }
 
   if(req.method === 'GET' && req.url === '/api/pi/models'){
     try{
@@ -67,6 +71,9 @@ const server = http.createServer(async (req, res) => {
     catch(_){ return json(res, 400, {error:'bad json'}); }
     try{
       const action=String(payload?.action || '');
+      if(['new','resume','fork','clone','tree','list'].includes(action)){
+        return json(res, 200, await piAgent.nativeSessionOperation({...payload,sessionAction:action}));
+      }
       if(action==='approve' || action==='reject' || action==='answer'){
         const value=action==='answer' ? payload.answer : action;
         return json(res, 200, piAgent.resolveApproval(payload.approvalId,value));
