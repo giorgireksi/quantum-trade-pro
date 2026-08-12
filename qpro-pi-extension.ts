@@ -22,6 +22,30 @@ function sleep(ms: number, signal?: AbortSignal) {
     if (signal) signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("Request cancelled")); }, { once: true });
   });
 }
+function chartRequestFile(cwd: string, id: string) {
+  return join(cwd, `.qpro-chart-request-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+async function requestChartAction(cwd: string, toolCallId: string, action: string, params: any, signal?: AbortSignal) {
+  const file = chartRequestFile(cwd, toolCallId);
+  writeFileSync(file, JSON.stringify({ type: "chart_request", requestId: toolCallId, action, params, decision: "pending", createdAt: Date.now() }, null, 2));
+  try {
+    while (true) {
+      if (signal?.aborted) throw new Error("Request cancelled");
+      if (existsSync(file)) {
+        try {
+          const value = JSON.parse(readFileSync(file, "utf8"));
+          if (value.result !== undefined || value.error) {
+            if (value.error) throw new Error(String(value.error));
+            return value.result;
+          }
+        } catch (error) {
+          if (error instanceof Error && /Request cancelled|Chart action failed|^Error:/.test(error.message)) throw error;
+        }
+      }
+      await sleep(250, signal);
+    }
+  } finally { try { unlinkSync(file); } catch {} }
+}
 function needsApproval(event: any, cwd: string) {
   const name = String(event.toolName || "");
   const input = event.input || {};
@@ -100,6 +124,76 @@ export default function qproTools(pi: ExtensionAPI) {
       const file=join(ctx.cwd,"QPRO_CHART_CONTEXT.md");
       return {content:[{type:"text",text:existsSync(file)?readFileSync(file,"utf8"):"No live chart context has been supplied yet."}],details:{path:file}};
     },
+  });
+  pi.registerTool({
+    name: "qpro_chart_get_state",
+    label: "QPRO Chart State",
+    description: "Read the live QPRO chart symbol, timeframe, chart type, indicators, drawings, and bar count.",
+    parameters: Type.Object({}),
+    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "get_state", {}, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_switch_symbol",
+    label: "Switch Chart Symbol",
+    description: "Switch the active QPRO chart symbol using the platform's semantic chart API.",
+    parameters: Type.Object({ symbol: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "switch_symbol", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_set_timeframe",
+    label: "Set Chart Timeframe",
+    description: "Change the active QPRO chart timeframe, preserving the platform's imported-data rules.",
+    parameters: Type.Object({ timeframe: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_timeframe", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_set_type",
+    label: "Set Chart Type",
+    description: "Change the QPRO chart type, such as candles, bars, line, area, or heikinashi.",
+    parameters: Type.Object({ type: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_type", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_drawings",
+    label: "List Chart Drawings",
+    description: "List semantic chart drawing objects with their logical time/price points.",
+    parameters: Type.Object({}),
+    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "list_drawings", {}, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_create_drawing",
+    label: "Create Chart Drawing",
+    description: "Create a drawing using logical time/price points. Use only when the user requested a chart annotation.",
+    parameters: Type.Object({ type: Type.String(), points: Type.Array(Type.Object({ time: Type.Number(), price: Type.Number() })), style: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "create_drawing", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_delete_drawing",
+    label: "Delete Chart Drawing",
+    description: "Delete a chart drawing after the user has clearly requested that deletion.",
+    parameters: Type.Object({ id: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "delete_drawing", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_chart_clear_drawings",
+    label: "Clear Chart Drawings",
+    description: "Remove all chart drawings after the user has clearly requested it.",
+    parameters: Type.Object({}),
+    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "clear_drawings", {}, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_indicator_validate",
+    label: "Validate Indicator",
+    description: "Validate indicator JavaScript against the live QPRO contract and dry-run it on current chart data without importing it.",
+    parameters: Type.Object({ code: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "validate_indicator", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_indicator_import",
+    label: "Review and Import Indicator",
+    description: "Stage a validated indicator for browser review. QPRO shows the code, validation result, and Apply/Reject controls; never claim it is applied until the user clicks Apply.",
+    parameters: Type.Object({ name: Type.String(), code: Type.String(), notes: Type.Optional(Type.String()), settings: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "import_indicator", params, signal)) }], details: {} }; },
   });
   pi.registerTool({
     name: "qpro_update_plan",

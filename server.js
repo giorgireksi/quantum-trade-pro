@@ -95,6 +95,9 @@ const server = http.createServer(async (req, res) => {
         if(!run) return json(res, 404, {ok:false,error:'No active Pi run'});
         return json(res, 200, await piAgent.controlPiAgent({chatId:run.chatId,action:'abort'}));
       }
+      if(action==='chartResult' || action==='chartError'){
+        return json(res, 200, piAgent.resolveChartRequest(payload.requestId, payload.result, action==='chartError' ? payload.error : null));
+      }
       if(action==='approve' || action==='reject' || action==='answer'){
         const value=action==='answer' ? payload.answer : action;
         return json(res, 200, piAgent.resolveApproval(payload.approvalId,value));

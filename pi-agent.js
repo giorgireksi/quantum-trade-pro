@@ -368,6 +368,13 @@ async function controlPiAgent(payload){
   if(action==='sessionInfo'){ return {ok:true,action,sessionId:active.entry.session.sessionId,sessionFile:active.entry.session.sessionFile,model:active.entry.model && active.entry.model.provider+'/'+active.entry.model.id,thinking:active.entry.session.thinkingLevel,messages:active.entry.session.messages.length,activeTools:active.entry.session.getActiveToolNames(),leafId:active.entry.sessionManager.getLeafId(),entries:active.entry.sessionManager.getEntries().map(x=>({id:x.id,type:x.type,role:x.message?.role || '',text:textBlock(x.message?.content).slice(0,100)}))}; }
   throw new Error('Unknown Pi control action: '+action);
 }
+function resolveChartRequest(requestId, result, error){
+  const safe=String(requestId || '').replace(/[^a-zA-Z0-9_-]/g,'_'); if(!safe) throw new Error('requestId is required');
+  const file=path.join(workspaceRoot,'.qpro-chart-request-'+safe+'.json'); if(!fs.existsSync(file)) throw new Error('Chart request is no longer pending');
+  let current={}; try{current=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){}
+  if(error) current.error=String(error); else current.result=result;
+  fs.writeFileSync(file,JSON.stringify(current,null,2)); return {ok:true,requestId:safe};
+}
 function resolveApproval(approvalId, value){
   const safe=String(approvalId || '').replace(/[^a-zA-Z0-9_-]/g,'_');
   if(!safe) throw new Error('approvalId is required');
@@ -380,4 +387,4 @@ function resolveApproval(approvalId, value){
   return {ok:true,approvalId:safe};
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,resolveApproval};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,resolveApproval,resolveChartRequest};
