@@ -65,7 +65,9 @@ function apiFor(protocol){
   return protocol === 'anthropic' ? 'anthropic-messages' : protocol === 'gemini' ? 'google-generative-ai' : protocol === 'responses' ? 'openai-responses' : 'openai-completions';
 }
 function sessionKey(payload){
-  return crypto.createHash('sha256').update(JSON.stringify({chatId:payload.chatId || 'default', piModel:payload.piModel || '', systemPrompt:payload.systemPrompt || ''})).digest('hex').slice(0,24);
+  const settings=nativePiSettings();
+  const modelKey=payload.piModel || ((settings.defaultProvider || '') + '/' + (settings.defaultModel || ''));
+  return crypto.createHash('sha256').update(JSON.stringify({chatId:payload.chatId || 'default', piModel:modelKey, systemPrompt:payload.systemPrompt || ''})).digest('hex').slice(0,24);
 }
 function safeChatDir(payload){ return path.join(sessionRoot, sessionKey(payload)); }
 function nativePiSettings(){
@@ -92,11 +94,27 @@ async function nativePiModels(){
 }
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
+  const agents = path.join(workspaceRoot,'AGENTS.md');
+  if(!fs.existsSync(agents)) fs.writeFileSync(agents, [
+    '# QPRO Pi Indicator Project', '',
+    'You are the Pi coding agent for Quantum Trade Pro. Work like a professional coding IDE assistant.', '',
+    '## Scope',
+    '- Work primarily inside this workspace and its indicators/ directory.',
+    '- Do not modify the QPRO application HTML or backend unless the user explicitly asks for platform engineering.',
+    '- For indicator changes, write complete JavaScript files under indicators/.',
+    '- Explain changes briefly and mention files changed.', '',
+    '## Indicator workflow',
+    '1. Read INDICATOR_CONTRACT.md before creating or changing an indicator.',
+    '2. Inspect related indicator files and use the coding tools normally.',
+    '3. Validate the code against the platform contract before recommending import.',
+    '4. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
+  ].join('\\n'));
   const contract = path.join(workspaceRoot,'INDICATOR_CONTRACT.md');
   if(!fs.existsSync(contract)) fs.writeFileSync(contract,INDICATOR_CONTRACT);
   const readme = path.join(workspaceRoot,'README.md');
   if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# Pi Indicator Workspace\n\nEdit files in `indicators/`. The chart imports validated files from the Pi assistant.\n');
 }
+ensureWorkspace();
 function textBlock(content){
   if(typeof content === 'string') return content;
   if(!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
