@@ -50,3 +50,4 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 - "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in
 - The Model field has a searchable model picker. NVIDIA NIM's **↻ Models** button loads the live catalog securely through the local backend; if unavailable, a curated NVIDIA fallback list remains available.
+- Multiple open tabs stay synchronized live. Workspace changes (settings, indicators, custom code, drawings, alerts, AI history/context, symbol/timeframe, and imported-symbol metadata) use `BroadcastChannel` with a `localStorage` event fallback. A change in one tab updates the others automatically.
