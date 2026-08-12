@@ -80,13 +80,26 @@ async function callProvider(baseUrl, model, apiKeys, messages, temperature){
   if(!model) throw new Error('AI provider model is empty');
   let lastErr = null;
   for(const key of keys){
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': 'Quantum-Trade-Pro/1.0'
+    };
     const token = cleanApiKey(key);
     if(token) headers['Authorization'] = 'Bearer ' + token;
+    const payload = {
+      model, messages, temperature: temperature ?? 0.2, stream: false
+    };
+    // NVIDIA DeepSeek V4 supports this OpenAI-compatible extension. Indicator
+    // generation does not need hidden reasoning tokens, so disable them for a
+    // fast, normal JSON completion.
+    if(/^deepseek-ai\/deepseek-v4-/i.test(String(model))){
+      payload.chat_template_kwargs = { enable_thinking: false };
+    }
     try{
       const result = await providerRequest(baseUrl, '/chat/completions', {
         method: 'POST', headers,
-        body: JSON.stringify({ model, messages, temperature: temperature ?? 0.2 })
+        body: JSON.stringify(payload)
       });
       // Some OpenAI-compatible gateways wrap the completion in {data: ...}.
       // Normalize that here so the browser always receives choices at top level.
