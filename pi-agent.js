@@ -104,7 +104,7 @@ async function createSession(payload){
   const loader=new pi.DefaultResourceLoader({cwd:workspaceRoot,agentDir:agentRoot,systemPromptOverride:()=>String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\n'+INDICATOR_CONTRACT+'\n\nYou are operating inside the isolated QPRO indicator workspace. Use your coding tools normally, but never access or modify paths outside the workspace.'});
   await loader.reload();
   const sessionManager=pi.SessionManager.continueRecent(workspaceRoot,safeChatDir(payload));
-  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,thinkingLevel:'medium'});
+  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:'medium'});
   return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
 }
 async function runPiAgent(payload){
