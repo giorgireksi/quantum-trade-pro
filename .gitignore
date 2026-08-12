@@ -6,3 +6,7 @@ BTC_data/
 # launcher runtime
 .qpro.pid
 .qpro.log
+
+# Pi workspace, persistent sessions, and app-local agent settings
+# These are intentionally isolated from ~/.pi/agent and contain user data.
+.qpro/
