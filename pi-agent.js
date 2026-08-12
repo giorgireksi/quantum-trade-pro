@@ -175,7 +175,11 @@ async function createSession(payload){
   });
   await loader.reload();
   const sessionManager=pi.SessionManager.continueRecent(workspaceRoot,safeChatDir(payload));
-  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
+  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
+  // The CLI exposes its registered tools through the active session. Enable all
+  // native built-ins and loaded extension tools so QPRO does not silently lose
+  // Pi abilities merely because it is embedded in a browser.
+  session.setActiveToolsByName(session.getAllTools().map(tool => tool.name));
   return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
 }
 async function runPiAgent(payload){
@@ -193,7 +197,7 @@ async function runPiAgent(payload){
     let answer=textParts.join('');
     if(!answer){ for(let i=(entry.session.messages || []).length-1;i>=0;i--){ const m=entry.session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)){answer=textBlock(m.content);break;} } }
     if(!answer) throw new Error('Pi completed without an assistant response');
-    return {content:answer,agent:'pi',protocol:entry.protocol,tools:events,files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.agent?.state?.compaction || null};
+    return {content:answer,agent:'pi',protocol:entry.protocol,tools:events,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false};
   }finally{unsubscribe();}
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
