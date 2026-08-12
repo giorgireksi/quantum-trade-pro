@@ -117,12 +117,29 @@ function openaiResult(body){
 }
 
 async function callOpenAI(baseUrl, model, key, messages, temperature){
-  const payload = { model, messages, temperature: temperature ?? 0.2, stream: false };
-  if(/^deepseek-ai\/deepseek-v4-/i.test(String(model))) payload.chat_template_kwargs = { enable_thinking: false };
-  const result = await providerRequest(baseUrl, '/chat/completions', {
-    method: 'POST', headers: providerHeaders(baseUrl, key), body: JSON.stringify(payload)
-  });
-  return openaiResult(result.body);
+  const models = [model];
+  // NVIDIA retired the unversioned V4 Flash ID. Keep old saved profiles
+  // working by transparently trying the currently published revision.
+  try{
+    if(new URL(String(baseUrl)).hostname === 'integrate.api.nvidia.com' && String(model).toLowerCase() === 'deepseek-ai/deepseek-v4-flash'){
+      models.push('deepseek-ai/deepseek-v4-flash-0731');
+    }
+  }catch(_){}
+  let lastErr = null;
+  for(const activeModel of models){
+    const payload = { model: activeModel, messages, temperature: temperature ?? 0.2, stream: false };
+    if(/^deepseek-ai\/deepseek-v4-/i.test(String(activeModel))) payload.chat_template_kwargs = { enable_thinking: false };
+    try{
+      const result = await providerRequest(baseUrl, '/chat/completions', {
+        method: 'POST', headers: providerHeaders(baseUrl, key), body: JSON.stringify(payload)
+      });
+      return openaiResult(result.body);
+    }catch(e){
+      lastErr = e;
+      if(!/HTTP 410/.test(String(e && e.message))) break;
+    }
+  }
+  throw lastErr || new Error('Provider request failed');
 }
 
 async function callResponses(baseUrl, model, key, messages, temperature){
