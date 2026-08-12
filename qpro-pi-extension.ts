@@ -22,6 +22,21 @@ function sleep(ms: number, signal?: AbortSignal) {
     if (signal) signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("Request cancelled")); }, { once: true });
   });
 }
+function needsApproval(event: any, cwd: string) {
+  const name = String(event.toolName || "");
+  const input = event.input || {};
+  if (name === "bash") {
+    const command = String(input.command || "");
+    return /(^|[;&|\n])\s*(sudo|rm\b|mkfs\b|dd\b|shutdown\b|reboot\b)|rm\s+[^\n]*(?:-r|-f)|git\s+reset\s+--hard|git\s+clean\s+-f|(?:npm|pnpm|yarn|pip)\s+install|curl\s+[^\n]*\|\s*(?:sh|bash)|chmod\s+777|>\s*\/|\bkill\s+-9/i.test(command);
+  }
+  if (name === "write" || name === "edit") {
+    const target = String(input.path || input.file || "");
+    if (!target) return false;
+    const absolute = target.startsWith("/") ? target : join(cwd, target);
+    return !(absolute === cwd || absolute.startsWith(cwd + "/"));
+  }
+  return false;
+}
 async function waitForDecision(file: string, signal?: AbortSignal) {
   while (true) {
     if (existsSync(file)) {
@@ -35,6 +50,22 @@ async function waitForDecision(file: string, signal?: AbortSignal) {
 }
 
 export default function qproTools(pi: ExtensionAPI) {
+  // Enforce approval for genuinely consequential built-in operations. Normal
+  // indicator reads/edits stay frictionless; risky shell commands and paths
+  // outside the isolated workspace pause until the browser decides.
+  pi.on("tool_call", async (event, ctx) => {
+    if (!needsApproval(event, ctx.cwd)) return;
+    const file = approvalFile(ctx.cwd, event.toolCallId);
+    const input = event.input || {};
+    const detail = event.toolName === "bash" ? String(input.command || "") : String(input.path || input.file || "");
+    writeFileSync(file, JSON.stringify({ type: "approval", action: `${event.toolName}: ${detail}`, reason: "This operation can modify data outside the normal QPRO indicator workflow.", risk: "high", decision: "pending", createdAt: Date.now() }, null, 2));
+    try {
+      const decision = await waitForDecision(file, ctx.signal);
+      if (decision.decision !== "approve") return { block: true, reason: "Blocked by QPRO user approval" };
+    } catch (error) {
+      return { block: true, reason: String(error instanceof Error ? error.message : error) };
+    } finally { try { unlinkSync(file); } catch {} }
+  });
   pi.registerCommand("qpro-status", {
     description: "Show QPRO indicator workspace status",
     handler: async (_args, ctx) => {
