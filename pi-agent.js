@@ -121,6 +121,10 @@ Important browser functions:
 
 Before consequential actions, use qpro_request_approval and wait for the user's decision. Use qpro_ask_user when an implementation choice is genuinely ambiguous. Do not bypass the browser validator or claim that a file is applied until the user imports it or the platform explicitly confirms the update.
 `;
+function writeChartContext(payload){
+  const context=String(payload.workspaceContext || '');
+  if(context) fs.writeFileSync(path.join(workspaceRoot,'QPRO_CHART_CONTEXT.md'), '# Current chart context\n\n'+context+'\n');
+}
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
   const extensionDir = path.join(workspaceRoot,'.pi','extensions');
@@ -169,6 +173,7 @@ function workspaceFiles(){
 }
 async function createSession(payload){
   ensureWorkspace();
+  writeChartContext(payload);
   const runtime=await pi.ModelRuntime.create();
   const model=resolveNativeModel(runtime,payload.piModel);
   const protocol=model.api;
@@ -196,6 +201,11 @@ async function createSession(payload){
   return {session,runtime,model,protocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0};
 }
 async function nativePiCommands(payload={}){ const entry=await sessionForPayload(payload); return entry.commands || []; }
+async function nativePiResources(){
+  const loader=new pi.DefaultResourceLoader({cwd:workspaceRoot,agentDir:agentRoot}); await loader.reload();
+  const ext=loader.getExtensions();
+  return {skills:(loader.getSkills()?.skills || []).map(x=>({name:x.name,description:x.description,path:x.filePath})),prompts:(loader.getPrompts()?.prompts || []).map(x=>({name:x.name,description:x.description,source:x.source})),extensions:(ext.extensions || []).map(x=>({name:x.name || x.path || 'extension'})),errors:(ext.errors || []).map(x=>String(x.error || x))};
+}
 async function nativePiSessions(){
   const dirs=[sessionRoot];
   for(const entry of fs.readdirSync(sessionRoot,{withFileTypes:true})) if(entry.isDirectory()) dirs.push(path.join(sessionRoot,entry.name));
@@ -226,7 +236,7 @@ async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
   if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
   const entry=await sessionForPayload(payload);
-  const textParts=[]; const toolEvents=[]; let closed=false;
+  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null;
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
     if(event.type==='message_update'){
@@ -234,6 +244,8 @@ async function streamPiAgent(payload, res){
       if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{delta}); }
       else if(ae?.type==='thinking_start') send('activity',{message:'Pi is reasoning…'});
       else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
+    }else if(event.type==='message_end' && event.message?.role==='assistant'){
+      latestUsage=event.message.usage || null; send('usage',{usage:latestUsage});
     }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
     else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
     else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); send('tool_end',{tool:item.tool,error:item.error}); }
@@ -251,10 +263,10 @@ async function streamPiAgent(payload, res){
   res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });
   send('session_start',{sessionId:entry.session.sessionId,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
   try{
-    await entry.session.prompt(makePrompt(entry,payload)); entry.initialized=true;
+    await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false});
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
@@ -269,7 +281,7 @@ async function runPiAgent(payload){
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
   const entry=await sessionForPayload(payload); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
-  try{await entry.session.prompt(makePrompt(entry,payload));entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
+  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
   const id=sessionKey(payload); const old=sessions.get(id);
@@ -331,4 +343,4 @@ function resolveApproval(approvalId, value){
   return {ok:true,approvalId:safe};
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativeSessionOperation,resolveApproval};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiResources,nativeSessionOperation,resolveApproval};

@@ -92,6 +92,16 @@ export default function qproTools(pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
+    name: "qpro_get_chart_context",
+    label: "QPRO Chart Context",
+    description: "Read the latest symbol, timeframe, selected indicators, notes, and chart context supplied by Quantum Trade Pro.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, _signal, _onUpdate, ctx) {
+      const file=join(ctx.cwd,"QPRO_CHART_CONTEXT.md");
+      return {content:[{type:"text",text:existsSync(file)?readFileSync(file,"utf8"):"No live chart context has been supplied yet."}],details:{path:file}};
+    },
+  });
+  pi.registerTool({
     name: "qpro_update_plan",
     label: "Update QPRO Plan",
     description: "Create or update the visible QPRO indicator implementation plan. Use before multi-step indicator work.",

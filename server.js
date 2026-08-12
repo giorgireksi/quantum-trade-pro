@@ -34,6 +34,10 @@ const server = http.createServer(async (req, res) => {
     try{ return json(res, 200, {ok:true, sessions:await piAgent.nativePiSessions()}); }
     catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
   }
+  if(req.method === 'GET' && req.url === '/api/pi/resources'){
+    try{ return json(res, 200, {ok:true, resources:await piAgent.nativePiResources()}); }
+    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
+  }
 
   if(req.method === 'GET' && req.url === '/api/pi/models'){
     try{

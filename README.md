@@ -59,3 +59,5 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 - The embedded UI exposes thinking-level selection, native model controls, plan progress, session metadata, and the loaded Pi extension tools.
 - Native session management is available through the slash palette: `/new`, `/resume`, `/fork`, `/clone`, `/tree`, and `/session`. `/resume` lists persisted QPRO Pi sessions; `/session` exposes entry IDs for branching/tree navigation; the backend uses Pi SessionManager APIs for replacement and branching.
 - Risky built-in operations are automatically intercepted by the QPRO extension and require browser approval, while safe indicator edits remain frictionless.
+- Added Pi resource inspection (`/api/pi/resources`) for skills, prompt templates, extensions, and load errors; a workspace Resources drawer exposes them.
+- Added context/usage telemetry, optional chart screenshot vision input, and `qpro_get_chart_context`, which reads the latest structured symbol/timeframe/indicator context from `QPRO_CHART_CONTEXT.md`.
