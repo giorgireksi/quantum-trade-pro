@@ -16,6 +16,10 @@ const FILE = path.join(__dirname, 'online_viewer_net (4).html');
 
 const json = (res, code, obj) => { res.writeHead(code, {'Content-Type': 'application/json'}); res.end(JSON.stringify(obj)); };
 const readBody = async (req) => { let b = ''; for await (const c of req) b += c; return b; };
+// Accept either a raw token or a copied "Bearer <token>" value.
+function cleanApiKey(value){
+  return String(value || '').trim().replace(/^Bearer\s+/i, '').replace(/^['"]|['"]$/g, '');
+}
 
 // OpenAI-compatible providers commonly expose one of these roots. Users often
 // paste the website root (for example https://openrouter.ai) instead of its API
@@ -77,7 +81,8 @@ async function callProvider(baseUrl, model, apiKeys, messages, temperature){
   let lastErr = null;
   for(const key of keys){
     const headers = { 'Content-Type': 'application/json' };
-    if(key) headers['Authorization'] = 'Bearer ' + key;
+    const token = cleanApiKey(key);
+    if(token) headers['Authorization'] = 'Bearer ' + token;
     try{
       const result = await providerRequest(baseUrl, '/chat/completions', {
         method: 'POST', headers,
@@ -123,7 +128,8 @@ const server = http.createServer(async (req, res) => {
     let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, { error: 'bad json' }); }
     try{
       const headers = {};
-      if(p.apiKey) headers['Authorization'] = 'Bearer ' + p.apiKey;
+      const token = cleanApiKey(p.apiKey);
+      if(token) headers['Authorization'] = 'Bearer ' + token;
       const result = await providerRequest(p.baseUrl, '/models', { method: 'GET', headers });
       json(res, 200, { status: result.response.status, ok: true, url: result.url, body: result.body });
     }catch(e){
