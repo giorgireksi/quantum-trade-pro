@@ -49,3 +49,4 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 - The backend automatically tries common `/v1`, `/api/v1`, and `/api` paths if the pasted root returns a 404.
 - "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in
+- The Model field has a searchable model picker. NVIDIA NIM's **↻ Models** button loads the live catalog securely through the local backend; if unavailable, a curated NVIDIA fallback list remains available.
