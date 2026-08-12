@@ -72,7 +72,9 @@ function apiFor(protocol){
 function sessionKey(payload){
   const settings=nativePiSettings();
   const modelKey=payload.piModel || ((settings.defaultProvider || '') + '/' + (settings.defaultModel || ''));
-  return crypto.createHash('sha256').update(JSON.stringify({chatId:payload.chatId || 'default', piModel:modelKey})).digest('hex').slice(0,24);
+  // One browser conversation maps to one native Pi session. Model changes must
+  // call setModel on that session, not silently select another recent session.
+  return crypto.createHash('sha256').update(String(payload.chatId || 'default')).digest('hex').slice(0,24);
 }
 function safeChatDir(payload){ return path.join(sessionRoot, sessionKey(payload)); }
 function nativePiSettings(){
@@ -309,12 +311,12 @@ async function streamPiAgent(payload, res){
   });
   activeChats.set(chatId,{entry,payload,send,stopRequested:false,startedAt:Date.now()});
   res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });
-  send('session_start',{sessionId:entry.session.sessionId,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
+  send('session_start',{sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
   try{
     await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
