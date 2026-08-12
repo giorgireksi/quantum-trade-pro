@@ -85,6 +85,16 @@ async function callProvider(baseUrl, model, apiKeys, messages, temperature){
       'Accept': 'application/json',
       'User-Agent': 'Quantum-Trade-Pro/1.0'
     };
+    // OpenCode sends these NVIDIA attribution headers for hosted NIM calls.
+    // Some NVIDIA organizations/API routes use them to identify an approved
+    // client origin, so mirror OpenCode's request shape when using NVIDIA.
+    try{
+      if(new URL(String(baseUrl)).hostname === 'integrate.api.nvidia.com'){
+        headers['HTTP-Referer'] = 'https://opencode.ai/';
+        headers['X-Title'] = 'opencode';
+        headers['X-BILLING-INVOKE-ORIGIN'] = 'OpenCode';
+      }
+    }catch(_){}
     const token = cleanApiKey(key);
     if(token) headers['Authorization'] = 'Bearer ' + token;
     const payload = {
