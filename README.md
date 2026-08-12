@@ -37,7 +37,9 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 ## AI setup
 
 ⚙ Settings → AI Providers:
-- Profile = name + base URL + model + API keys (one per line, failover order)
+- Profile = name + protocol + base URL + model + API keys (one per line, failover order)
+- Choose **Auto-detect** for most services. The backend supports OpenAI-compatible Chat Completions, OpenAI Responses, Anthropic Messages, and Google Gemini GenerateContent APIs.
+- OpenAI-compatible covers OpenAI, NVIDIA NIM, OpenRouter, Groq, DeepSeek, Together, Mistral, xAI, Cline, Ollama, LM Studio, and other compatible gateways.
 - Use the provider's **API base URL**, not its website URL. Examples:
   - OpenAI: `https://api.openai.com/v1`
   - OpenRouter: `https://openrouter.ai/api/v1`
