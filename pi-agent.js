@@ -13,7 +13,9 @@ const pi = require(PI_ROOT);
 const appRoot = __dirname;
 const appData = path.join(appRoot, '.qpro');
 const workspaceRoot = path.join(appData, 'pi-workspace');
-const agentRoot = path.join(appData, 'pi-agent');
+// Pi CLI's native catalog, credentials, settings, skills, and extensions.
+// QPRO keeps only workspace and sessions local to this application.
+const agentRoot = pi.getAgentDir();
 const sessionRoot = path.join(appData, 'pi-sessions');
 const tempRoot = path.join(os.tmpdir(), 'quantum-trade-pro-pi-models');
 for (const dir of [workspaceRoot, agentRoot, sessionRoot, tempRoot]) fs.mkdirSync(dir, {recursive:true});
@@ -63,16 +65,30 @@ function apiFor(protocol){
   return protocol === 'anthropic' ? 'anthropic-messages' : protocol === 'gemini' ? 'google-generative-ai' : protocol === 'responses' ? 'openai-responses' : 'openai-completions';
 }
 function sessionKey(payload){
-  const p = payload.profile || {};
-  return crypto.createHash('sha256').update(JSON.stringify({chatId:payload.chatId || 'default', baseUrl:p.baseUrl, model:p.model, protocol:p.protocol, systemPrompt:payload.systemPrompt || ''})).digest('hex').slice(0,24);
+  return crypto.createHash('sha256').update(JSON.stringify({chatId:payload.chatId || 'default', piModel:payload.piModel || '', systemPrompt:payload.systemPrompt || ''})).digest('hex').slice(0,24);
 }
 function safeChatDir(payload){ return path.join(sessionRoot, sessionKey(payload)); }
-function modelConfig(id, profile, protocol){
-  const dir = path.join(tempRoot, id); fs.mkdirSync(dir,{recursive:true});
-  const model = String(profile.model || '').trim();
-  const provider = {baseUrl:String(profile.baseUrl || '').replace(/\/+$/,''), api:apiFor(protocol), apiKey:'runtime-key', models:[{id:model,name:model,reasoning:true,input:['text'],contextWindow:200000,maxTokens:32768,compat:protocol === 'openai' ? {supportsDeveloperRole:false} : undefined}]};
-  const modelsPath = path.join(dir,'models.json'); fs.writeFileSync(modelsPath,JSON.stringify({providers:{qpro:provider}}));
-  return {modelsPath, authPath:path.join(dir,'auth.json')};
+function nativePiSettings(){
+  try{return JSON.parse(fs.readFileSync(path.join(agentRoot,'settings.json'),'utf8'));}catch(_){return {};}
+}
+function resolveNativeModel(runtime, requested){
+  const settings=nativePiSettings();
+  const wanted=String(requested || '').trim();
+  if(wanted){
+    const resolved=pi.resolveCliModel({cliModel:wanted,modelRuntime:runtime});
+    if(resolved.model) return resolved.model;
+    throw new Error(resolved.error || ('Pi model not found: ' + wanted));
+  }
+  const provider=String(settings.defaultProvider || '').trim();
+  const modelId=String(settings.defaultModel || '').trim();
+  if(provider && modelId){ const configured=runtime.getModel(provider,modelId); if(configured) return configured; }
+  const available=runtime.getAvailableSnapshot ? runtime.getAvailableSnapshot() : [];
+  if(available.length) return available[0];
+  throw new Error('Pi CLI has no authenticated models. Configure a provider with `pi /login` or in ~/.pi/agent/auth.json.');
+}
+async function nativePiModels(){
+  const runtime=await pi.ModelRuntime.create();
+  return (await runtime.getAvailable()).map(m=>({provider:m.provider,id:m.id,name:m.name,reasoning:!!m.reasoning,input:m.input}));
 }
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
@@ -97,14 +113,13 @@ function workspaceFiles(){
 }
 async function createSession(payload){
   ensureWorkspace();
-  const profile=payload.profile || {}; const protocol=protocolFor(profile.baseUrl,profile.protocol); const cfg=modelConfig(sessionKey(payload),profile,protocol);
-  const runtime=await pi.ModelRuntime.create({modelsPath:cfg.modelsPath,authPath:cfg.authPath});
-  const token=(Array.isArray(profile.apiKeys)?profile.apiKeys:[profile.apiKey]).map(cleanKey).find(Boolean); if(token) await runtime.setRuntimeApiKey('qpro',token);
-  const model=runtime.getModel('qpro',String(profile.model || '').trim()); if(!model) throw new Error('Pi could not load model '+profile.model);
+  const runtime=await pi.ModelRuntime.create();
+  const model=resolveNativeModel(runtime,payload.piModel);
+  const protocol=model.api;
   const loader=new pi.DefaultResourceLoader({cwd:workspaceRoot,agentDir:agentRoot,systemPromptOverride:()=>String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\n'+INDICATOR_CONTRACT+'\n\nYou are operating inside the isolated QPRO indicator workspace. Use your coding tools normally, but never access or modify paths outside the workspace.'});
   await loader.reload();
   const sessionManager=pi.SessionManager.continueRecent(workspaceRoot,safeChatDir(payload));
-  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:'medium'});
+  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,sessionManager,tools:['read','bash','edit','write','grep','find','ls'],thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
   return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
 }
 async function runPiAgent(payload){
@@ -126,4 +141,4 @@ async function runPiAgent(payload){
   }finally{unsubscribe();}
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT};
+module.exports={runPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings};

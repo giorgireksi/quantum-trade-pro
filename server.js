@@ -246,8 +246,14 @@ const server = http.createServer(async (req, res) => {
   // Backend-mode detector used by the browser app.
   if(req.method === 'GET' && req.url === '/api/ping'){ json(res, 200, { ok: true, token: 'qpro' }); return; }
 
-  // Pi-backed agent endpoint. The browser sends the active provider profile;
-  // Pi runs server-side with read-only tools and returns a normalized answer.
+  // Native Pi CLI model catalog. Credentials/providers come from Pi's own
+  // ~/.pi/agent configuration; the browser does not need custom AI profiles.
+  if(req.method === 'GET' && req.url === '/api/pi/models'){
+    try{ return json(res, 200, {ok:true, models:await piAgent.nativePiModels(), settings:piAgent.nativePiSettings()}); }
+    catch(e){ return json(res, 502, {ok:false, error:String((e && e.message) || e)}); }
+  }
+
+  // Pi-backed agent endpoint. Model/auth/provider resolution is native to Pi.
   if(req.method === 'POST' && req.url === '/api/pi/chat'){
     let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, {error:'bad json'}); }
     try{
