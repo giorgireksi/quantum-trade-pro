@@ -26,6 +26,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {ok:true, token:'qpro', agent:'pi'});
   }
 
+  if(req.method === 'GET' && req.url === '/api/pi/commands'){
+    try{ return json(res, 200, {ok:true, commands:await piAgent.nativePiCommands({chatId:'command-catalog'})}); }
+    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
+  }
+
   if(req.method === 'GET' && req.url === '/api/pi/models'){
     try{
       return json(res, 200, {

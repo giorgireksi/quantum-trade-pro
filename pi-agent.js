@@ -177,13 +177,15 @@ async function createSession(payload){
   });
   await loader.reload();
   const sessionManager=pi.SessionManager.continueRecent(workspaceRoot,safeChatDir(payload));
-  const {session}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
+  const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
   // The CLI exposes its registered tools through the active session. Enable all
   // native built-ins and loaded extension tools so QPRO does not silently lose
   // Pi abilities merely because it is embedded in a browser.
   session.setActiveToolsByName(session.getAllTools().map(tool => tool.name));
-  return {session,runtime,model,protocol,initialized:session.messages && session.messages.length > 0};
+  const commands=(extensionsResult.runtime.getCommands ? extensionsResult.runtime.getCommands() : []).map(command => ({name:command.name,description:command.description || '',source:command.source || 'extension',sourceInfo:command.sourceInfo ? {path:command.sourceInfo.path,scope:command.sourceInfo.scope,origin:command.sourceInfo.origin} : undefined}));
+  return {session,runtime,model,protocol,commands,initialized:session.messages && session.messages.length > 0};
 }
+async function nativePiCommands(payload={}){ const entry=await sessionForPayload(payload); return entry.commands || []; }
 function sessionForPayload(payload){
   const id=sessionKey(payload); let entry=sessions.get(id);
   return entry ? Promise.resolve(entry) : createSession(payload).then(created=>{sessions.set(id,created);return created;});
@@ -191,7 +193,11 @@ function sessionForPayload(payload){
 function makePrompt(entry,payload){
   const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+payload.workspaceContext:'';
   const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
-  return (entry.initialized ? textBlock(latest && latest.content) : promptWithHistory(payload.messages)) + workspace + '\n\nUse the workspace tools when useful. If you create or modify an indicator, save it under indicators/ and report the relative path.';
+  const latestText=textBlock(latest && latest.content).trim();
+  // Preserve slash commands exactly. Pi's AgentSession expands extension
+  // commands, prompt templates, and skills when prompt() receives the raw /… text.
+  if(/^\/\S+/.test(latestText)) return latestText;
+  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + '\n\nUse the workspace tools when useful. If you create or modify an indicator, save it under indicators/ and report the relative path.';
 }
 function finalAssistantText(session, streamed){
   if(streamed) return streamed;
@@ -248,9 +254,15 @@ async function runPiAgent(payload){
   try{await entry.session.prompt(makePrompt(entry,payload));entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function controlPiAgent(payload){
-  const active=activeChats.get(String(payload.chatId || 'default'));
-  if(!active) return {ok:false,error:'No active Pi run for this conversation'};
+  const chatId=String(payload.chatId || 'default');
+  const active=activeChats.get(chatId);
   const action=String(payload.action || '');
+  if(!active && action==='compact'){
+    const entry=await sessionForPayload(payload);
+    await entry.session.compact(String(payload.text || '') || undefined);
+    return {ok:true,action,sessionId:entry.session.sessionId};
+  }
+  if(!active) return {ok:false,error:'No active Pi run for this conversation'};
   if(action==='abort'){active.stopRequested=true;await active.entry.session.abort();return {ok:true,action};}
   if(action==='steer'){await active.entry.session.steer(String(payload.text || ''));return {ok:true,action};}
   if(action==='followUp'){await active.entry.session.followUp(String(payload.text || ''));return {ok:true,action};}
@@ -258,4 +270,4 @@ async function controlPiAgent(payload){
   throw new Error('Unknown Pi control action: '+action);
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands};
