@@ -21,6 +21,10 @@ const tempRoot = path.join(os.tmpdir(), 'quantum-trade-pro-pi-models');
 for (const dir of [workspaceRoot, agentRoot, sessionRoot, tempRoot]) fs.mkdirSync(dir, {recursive:true});
 const sessions = new Map();
 const activeChats = new Map();
+const resourceStateFile = path.join(appData,'pi-resource-state.json');
+function readResourceState(){ try{return JSON.parse(fs.readFileSync(resourceStateFile,'utf8'));}catch(_){return {disabled:{}};} }
+function resourceKey(kind,name){ const value=String(name || ''); return kind==='extension' && /qpro-tools(?:\.ts)?$/i.test(value) ? 'qpro-tools' : value; }
+function resourceIsEnabled(kind,name){ return readResourceState().disabled?.[kind]?.[resourceKey(kind,name)] !== true; }
 
 const INDICATOR_CONTRACT = `# Quantum Trade Pro indicator workspace
 
@@ -131,7 +135,8 @@ function ensureWorkspace(){
   fs.mkdirSync(extensionDir,{recursive:true});
   const extensionSource = path.join(appRoot,'qpro-pi-extension.ts');
   const extensionTarget = path.join(extensionDir,'qpro-tools.ts');
-  if(fs.existsSync(extensionSource)) fs.copyFileSync(extensionSource,extensionTarget);
+  if(fs.existsSync(extensionSource) && resourceIsEnabled('extension','qpro-tools')) fs.copyFileSync(extensionSource,extensionTarget);
+  else if(fs.existsSync(extensionTarget)) try{fs.unlinkSync(extensionTarget);}catch(_){}
   const agents = path.join(workspaceRoot,'AGENTS.md');
   if(!fs.existsSync(agents)) fs.writeFileSync(agents, [
     '# QPRO Pi Indicator Project', '',
@@ -187,6 +192,9 @@ async function createSession(payload){
     appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\nYou are operating inside the QPRO indicator workspace. Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md when relevant. Use your Pi coding tools normally. Do not claim a chart change is applied until the platform validator/import boundary confirms it.']
   });
   await loader.reload();
+  const state=readResourceState();
+  if(Array.isArray(loader.skills)) loader.skills=loader.skills.filter(x=>resourceIsEnabled('skill',x.name));
+  if(Array.isArray(loader.prompts)) loader.prompts=loader.prompts.filter(x=>resourceIsEnabled('prompt',x.name));
   const sessionDir=safeChatDir(payload);
   let sessionManager;
   if(payload.sessionFile) sessionManager=pi.SessionManager.open(payload.sessionFile,sessionDir,workspaceRoot);
@@ -198,13 +206,42 @@ async function createSession(payload){
   // Pi abilities merely because it is embedded in a browser.
   session.setActiveToolsByName(session.getAllTools().map(tool => tool.name));
   const commands=(extensionsResult.runtime.getCommands ? extensionsResult.runtime.getCommands() : []).map(command => ({name:command.name,description:command.description || '',source:command.source || 'extension',sourceInfo:command.sourceInfo ? {path:command.sourceInfo.path,scope:command.sourceInfo.scope,origin:command.sourceInfo.origin} : undefined}));
-  return {session,runtime,model,protocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0};
+  return {session,runtime,model,protocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0,telemetry:{startedAt:Date.now(),compactions:[],retries:[],subagents:new Map()}};
 }
 async function nativePiCommands(payload={}){ const entry=await sessionForPayload(payload); return entry.commands || []; }
+function sessionStats(entry){
+  let stats={}; try{stats=entry.session.getSessionStats() || {};}catch(_){}
+  let contextUsage=null; try{contextUsage=entry.session.getContextUsage() || null;}catch(_){}
+  const entries=entry.sessionManager.getEntries();
+  const compactions=entries.filter(x=>x.type==='compaction').map(x=>({id:x.id,timestamp:x.timestamp,summary:String(x.summary || '').slice(0,240),tokensBefore:x.tokensBefore || null,usage:x.usage || null}));
+  const branchSummaries=entries.filter(x=>x.type==='branch_summary').map(x=>({id:x.id,timestamp:x.timestamp,summary:String(x.summary || '').slice(0,240),usage:x.usage || null}));
+  return {sessionFile:entry.session.sessionFile,sessionId:entry.session.sessionId,userMessages:stats.userMessages ?? entries.filter(x=>x.type==='message'&&x.message?.role==='user').length,assistantMessages:stats.assistantMessages ?? entries.filter(x=>x.type==='message'&&x.message?.role==='assistant').length,toolCalls:stats.toolCalls ?? 0,toolResults:stats.toolResults ?? 0,totalMessages:stats.totalMessages ?? entry.session.messages.length,tokens:stats.tokens || {},cost:stats.cost ?? 0,contextUsage:contextUsage || stats.contextUsage || null,compactions,branchSummaries,retries:entry.telemetry?.retries || [],subagents:[...(entry.telemetry?.subagents?.values?.() || [])]};
+}
+async function nativePiStatus(){
+  const runs=[];
+  for(const [chatId,item] of activeChats){
+    const subagents=[...(item.entry.telemetry?.subagents?.values?.() || [])];
+    runs.push({chatId,sessionId:item.entry.session.sessionId,model:item.entry.model.provider+'/'+item.entry.model.id,startedAt:item.startedAt,stopRequested:!!item.stopRequested,isStreaming:item.entry.session.isStreaming,isCompacting:item.entry.session.isCompacting,retryAttempt:item.entry.session.retryAttempt || 0,subagents,stats:sessionStats(item.entry)});
+  }
+  return {ok:true,runs,activeCount:runs.length};
+}
+async function nativePiResourceAction(payload={}){
+  const action=String(payload.resourceAction || payload.action || ''); const kind=String(payload.kind || ''); const name=String(payload.name || '');
+  const state=readResourceState(); state.disabled ||= {};
+  if(action==='toggle' && kind && name){ state.disabled[kind] ||= {}; state.disabled[kind][resourceKey(kind,name)]=payload.enabled===false; fs.writeFileSync(resourceStateFile,JSON.stringify(state,null,2)); ensureWorkspace(); for(const item of sessions.values()){try{await item.session.reload();}catch(_){} } }
+  if(action==='reload'){ ensureWorkspace(); for(const item of sessions.values()){try{await item.session.reload();}catch(_){} } }
+  const resources=await nativePiResources(); for(const key of ['extensions','skills','prompts']) resources[key]=(resources[key]||[]).map(x=>({...x,kind:key.slice(0,-1),enabled:state.disabled[key.slice(0,-1)]?.[resourceKey(key.slice(0,-1),x.name)] !== true}));
+  return {ok:true,resources,state,reloaded:action==='reload'||action==='toggle'};
+}
 async function nativePiResources(){
   const loader=new pi.DefaultResourceLoader({cwd:workspaceRoot,agentDir:agentRoot}); await loader.reload();
   const ext=loader.getExtensions();
   return {skills:(loader.getSkills()?.skills || []).map(x=>({name:x.name,description:x.description,path:x.filePath})),prompts:(loader.getPrompts()?.prompts || []).map(x=>({name:x.name,description:x.description,source:x.source})),extensions:(ext.extensions || []).map(x=>({name:x.name || x.path || 'extension'})),errors:(ext.errors || []).map(x=>String(x.error || x))};
+}
+async function nativePiSessionTree(file){
+  const resolved=path.resolve(String(file || '')); if(!resolved.startsWith(path.resolve(sessionRoot)+path.sep)) throw new Error('Session path outside QPRO sessions');
+  const manager=pi.SessionManager.open(resolved,path.dirname(resolved),workspaceRoot);
+  const flat=[]; const visit=(node,parentId=null)=>{ if(!node) return; const x=node.entry || node; flat.push({id:x.id,parentId:x.parentId ?? parentId,type:x.type,role:x.message?.role || '',text:textBlock(x.message?.content).slice(0,180),label:node.label || '',children:(node.children || []).map(c=>(c.entry || c).id)}); for(const child of (node.children || [])) visit(child,x.id); }; for(const node of manager.getTree()) visit(node,null); return flat;
 }
 async function nativePiSessions(){
   const dirs=[sessionRoot];
@@ -245,21 +282,21 @@ async function streamPiAgent(payload, res){
       else if(ae?.type==='thinking_start') send('activity',{message:'Pi is reasoning…'});
       else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
     }else if(event.type==='message_end' && event.message?.role==='assistant'){
-      latestUsage=event.message.usage || null; send('usage',{usage:latestUsage});
-    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
+      latestUsage=event.message.usage || null; send('usage',{usage:latestUsage,stats:sessionStats(entry)});
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
     else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
-    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); send('tool_end',{tool:item.tool,error:item.error}); }
+    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);sub.status=item.error?'error':'complete';sub.finishedAt=Date.now();sub.error=item.error;send('subagent_end',{id:event.toolCallId,status:sub.status});} send('tool_end',{tool:item.tool,error:item.error}); }
     else if(event.type==='agent_start') send('agent_start');
     else if(event.type==='agent_end') send('agent_end');
     else if(event.type==='turn_start') send('turn_start');
     else if(event.type==='turn_end') send('turn_end');
-    else if(event.type==='compaction_start') send('compaction_start',{message:'Pi is compacting context…'});
-    else if(event.type==='compaction_end') send('compaction_end',{message:'Context compaction complete'});
-    else if(event.type==='auto_retry_start') send('retry_start',{message:'Pi is retrying the provider request…'});
+    else if(event.type==='compaction_start'){entry.telemetry.compactions.push({startedAt:Date.now(),reason:event.reason || 'automatic'});send('compaction_start',{message:'Pi is compacting context…',reason:event.reason});}
+    else if(event.type==='compaction_end') send('compaction_end',{message:'Context compaction complete',result:event.result || null});
+    else if(event.type==='auto_retry_start'){entry.telemetry.retries.push({startedAt:Date.now(),attempt:event.attempt || entry.session.retryAttempt || 1,source:event.source || 'provider',error:event.errorMessage || ''});send('retry_start',{message:'Pi is retrying the provider request…',attempt:event.attempt || entry.session.retryAttempt || 1});}
     else if(event.type==='auto_retry_end') send('retry_end');
     else if(event.type==='queue_update') send('queue_update',{steering:event.steering || 0,followUp:event.followUp || 0});
   });
-  activeChats.set(chatId,{entry,payload,send,stopRequested:false});
+  activeChats.set(chatId,{entry,payload,send,stopRequested:false,startedAt:Date.now()});
   res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });
   send('session_start',{sessionId:entry.session.sessionId,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
   try{
@@ -343,4 +380,4 @@ function resolveApproval(approvalId, value){
   return {ok:true,approvalId:safe};
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiResources,nativeSessionOperation,resolveApproval};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,resolveApproval};

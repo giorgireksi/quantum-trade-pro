@@ -35,8 +35,16 @@ const server = http.createServer(async (req, res) => {
     catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
   }
   if(req.method === 'GET' && req.url === '/api/pi/resources'){
-    try{ return json(res, 200, {ok:true, resources:await piAgent.nativePiResources()}); }
+    try{ const result=await piAgent.nativePiResourceAction({action:'list'}); return json(res, 200, result); }
     catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
+  }
+  if(req.method === 'GET' && req.url === '/api/pi/status'){
+    try{ return json(res, 200, await piAgent.nativePiStatus()); }
+    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
+  }
+  if(req.method === 'GET' && req.url.startsWith('/api/pi/session-tree')){
+    try{ const file=new URL(req.url,'http://qpro.local').searchParams.get('file'); return json(res, 200, {ok:true,tree:await piAgent.nativePiSessionTree(file)}); }
+    catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
   }
 
   if(req.method === 'GET' && req.url === '/api/pi/models'){
@@ -77,6 +85,15 @@ const server = http.createServer(async (req, res) => {
       const action=String(payload?.action || '');
       if(['new','resume','fork','clone','tree','list'].includes(action)){
         return json(res, 200, await piAgent.nativeSessionOperation({...payload,sessionAction:action}));
+      }
+      if(action==='resourceToggle' || action==='resourceReload'){
+        return json(res, 200, await piAgent.nativePiResourceAction({...payload,resourceAction:action==='resourceToggle'?'toggle':'reload'}));
+      }
+      if(action==='cancelSubagent'){
+        const status=await piAgent.nativePiStatus();
+        const run=status.runs.find(x=>x.chatId===String(payload.chatId || 'default'));
+        if(!run) return json(res, 404, {ok:false,error:'No active Pi run'});
+        return json(res, 200, await piAgent.controlPiAgent({chatId:run.chatId,action:'abort'}));
       }
       if(action==='approve' || action==='reject' || action==='answer'){
         const value=action==='answer' ? payload.answer : action;
