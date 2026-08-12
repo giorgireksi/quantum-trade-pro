@@ -2,3 +2,7 @@ node_modules/
 dist/
 shots/
 BTC_data/
+
+# launcher runtime
+.qpro.pid
+.qpro.log
