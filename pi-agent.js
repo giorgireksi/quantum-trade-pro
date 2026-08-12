@@ -217,6 +217,17 @@ function sessionStats(entry){
   const branchSummaries=entries.filter(x=>x.type==='branch_summary').map(x=>({id:x.id,timestamp:x.timestamp,summary:String(x.summary || '').slice(0,240),usage:x.usage || null}));
   return {sessionFile:entry.session.sessionFile,sessionId:entry.session.sessionId,userMessages:stats.userMessages ?? entries.filter(x=>x.type==='message'&&x.message?.role==='user').length,assistantMessages:stats.assistantMessages ?? entries.filter(x=>x.type==='message'&&x.message?.role==='assistant').length,toolCalls:stats.toolCalls ?? 0,toolResults:stats.toolResults ?? 0,totalMessages:stats.totalMessages ?? entry.session.messages.length,tokens:stats.tokens || {},cost:stats.cost ?? 0,contextUsage:contextUsage || stats.contextUsage || null,compactions,branchSummaries,retries:entry.telemetry?.retries || [],subagents:[...(entry.telemetry?.subagents?.values?.() || [])]};
 }
+function createSubagentCancellationController(entry,id){
+  return {cancel:()=>{const sub=entry.telemetry.subagents.get(id);if(sub)sub.status='cancel_requested';return false;}};
+}
+async function cancelPiSubagent(payload){
+  const entry=sessions.get(sessionKey(payload)); if(!entry) return {ok:false,error:'No active Pi session'};
+  const id=String(payload.subagentId || payload.toolCallId || ''); const sub=entry.telemetry.subagents.get(id); if(!sub) return {ok:false,error:'Subagent not found or already finished'};
+  if(!sub.asyncDir) return {ok:false,error:'This foreground subagent has no independent public cancellation channel; async subagents can be cancelled independently.'};
+  sub.status='cancel_requested';
+  const control=path.join(sub.asyncDir,'control'); fs.mkdirSync(control,{recursive:true}); fs.writeFileSync(path.join(control,'stop.json'),JSON.stringify({type:'stop',ts:Date.now(),source:'qpro-dashboard',reason:payload.reason || 'Cancelled from QPRO dashboard'}));
+  return {ok:true,subagentId:id,status:'cancel_requested',asyncId:sub.asyncId,parentContinues:true};
+}
 async function nativePiStatus(){
   const runs=[];
   for(const [chatId,item] of activeChats){
@@ -273,7 +284,7 @@ async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
   if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
   const entry=await sessionForPayload(payload);
-  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null;
+  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map();
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
     if(event.type==='message_update'){
@@ -283,9 +294,9 @@ async function streamPiAgent(payload, res){
       else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
     }else if(event.type==='message_end' && event.message?.role==='assistant'){
       latestUsage=event.message.usage || null; send('usage',{usage:latestUsage,stats:sessionStats(entry)});
-    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); childControllers.set(item.toolCallId,createSubagentCancellationController(entry,item.toolCallId)); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
     else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
-    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);sub.status=item.error?'error':'complete';sub.finishedAt=Date.now();sub.error=item.error;send('subagent_end',{id:event.toolCallId,status:sub.status});} send('tool_end',{tool:item.tool,error:item.error}); }
+    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);const details=event.result?.details || event.result?.data?.details || {};if(details.asyncId)sub.asyncId=details.asyncId;if(details.asyncDir)sub.asyncDir=details.asyncDir;sub.status=item.error?(sub.status==='cancel_requested'?'cancelled':'error'):'complete';sub.finishedAt=Date.now();sub.error=item.error;childControllers.delete(event.toolCallId);send('subagent_end',{id:event.toolCallId,status:sub.status,asyncId:sub.asyncId});} send('tool_end',{tool:item.tool,error:item.error}); }
     else if(event.type==='agent_start') send('agent_start');
     else if(event.type==='agent_end') send('agent_end');
     else if(event.type==='turn_start') send('turn_start');
@@ -387,4 +398,4 @@ function resolveApproval(approvalId, value){
   return {ok:true,approvalId:safe};
 }
 function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,resolveApproval,resolveChartRequest};
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,cancelPiSubagent,resolveApproval,resolveChartRequest};

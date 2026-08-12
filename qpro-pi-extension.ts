@@ -126,6 +126,20 @@ export default function qproTools(pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
+    name: "qpro_indicator_list",
+    label: "QPRO Built-in Indicators",
+    description: "List all built-in QPRO indicators and whether each is currently active on the chart.",
+    parameters: Type.Object({}),
+    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "list_indicators", {}, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
+    name: "qpro_indicator_set",
+    label: "Set Built-in Indicator",
+    description: "Enable or disable a built-in QPRO indicator by its id. This changes the chart immediately after the semantic request is confirmed by the platform.",
+    parameters: Type.Object({ id: Type.String(), enabled: Type.Boolean() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_indicator", params, signal)) }], details: {} }; },
+  });
+  pi.registerTool({
     name: "qpro_chart_get_state",
     label: "QPRO Chart State",
     description: "Read the live QPRO chart symbol, timeframe, chart type, indicators, drawings, and bar count.",

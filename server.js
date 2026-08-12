@@ -89,12 +89,7 @@ const server = http.createServer(async (req, res) => {
       if(action==='resourceToggle' || action==='resourceReload'){
         return json(res, 200, await piAgent.nativePiResourceAction({...payload,resourceAction:action==='resourceToggle'?'toggle':'reload'}));
       }
-      if(action==='cancelSubagent'){
-        const status=await piAgent.nativePiStatus();
-        const run=status.runs.find(x=>x.chatId===String(payload.chatId || 'default'));
-        if(!run) return json(res, 404, {ok:false,error:'No active Pi run'});
-        return json(res, 200, await piAgent.controlPiAgent({chatId:run.chatId,action:'abort'}));
-      }
+      if(action==='cancelSubagent') return json(res, 200, await piAgent.cancelPiSubagent(payload));
       if(action==='chartResult' || action==='chartError'){
         return json(res, 200, piAgent.resolveChartRequest(payload.requestId, payload.result, action==='chartError' ? payload.error : null));
       }
