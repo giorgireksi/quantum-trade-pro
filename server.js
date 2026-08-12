@@ -129,6 +129,17 @@ async function callOpenAI(baseUrl, model, key, messages, temperature){
   for(const activeModel of models){
     const payload = { model: activeModel, messages, temperature: temperature ?? 0.2, stream: false };
     if(/^deepseek-ai\/deepseek-v4-/i.test(String(activeModel))) payload.chat_template_kwargs = { enable_thinking: false };
+    // Match NVIDIA Build's OpenAI-compatible defaults for Step Flash. These
+    // fields are intentionally scoped to NVIDIA so stricter providers do not
+    // receive unsupported parameters.
+    try{
+      if(new URL(String(baseUrl)).hostname === 'integrate.api.nvidia.com'){
+        payload.top_p = 0.95;
+        payload.max_tokens = 16384;
+        payload.seed = 42;
+        if(/^stepfun-ai\/step-3\.7-flash$/i.test(String(activeModel))) payload.temperature = 1;
+      }
+    }catch(_){}
     try{
       const result = await providerRequest(baseUrl, '/chat/completions', {
         method: 'POST', headers: providerHeaders(baseUrl, key), body: JSON.stringify(payload)
