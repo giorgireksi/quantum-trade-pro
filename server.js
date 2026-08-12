@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const PORT = Number(process.env.PORT) || 8080;
 const FILE = path.join(__dirname, 'online_viewer_net (4).html');
+const piAgent = require('./pi-agent');
 
 const json = (res, code, obj) => { res.writeHead(code, {'Content-Type': 'application/json'}); res.end(JSON.stringify(obj)); };
 const readBody = async (req) => { let b = ''; for await (const c of req) b += c; return b; };
@@ -245,7 +246,22 @@ const server = http.createServer(async (req, res) => {
   // Backend-mode detector used by the browser app.
   if(req.method === 'GET' && req.url === '/api/ping'){ json(res, 200, { ok: true, token: 'qpro' }); return; }
 
-  // Proxy a chat-completions call (the main AI path).
+  // Pi-backed agent endpoint. The browser sends the active provider profile;
+  // Pi runs server-side with read-only tools and returns a normalized answer.
+  if(req.method === 'POST' && req.url === '/api/pi/chat'){
+    let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, {error:'bad json'}); }
+    try{
+      const result = await piAgent.runPiAgent(p);
+      console.log(new Date().toISOString(), 'pi/chat ok model=' + (p.profile && p.profile.model));
+      json(res, 200, result);
+    }catch(e){
+      console.log(new Date().toISOString(), 'pi/chat err', e && e.message);
+      json(res, 502, {error:String((e && e.message) || e)});
+    }
+    return;
+  }
+
+  // Proxy a chat-completions call (the fallback/direct AI path).
   if(req.method === 'POST' && req.url === '/api/ai/chat'){
     let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, { error: 'bad json' }); }
     try{
