@@ -38,5 +38,12 @@ only work reliably in Backend mode (or with CORS enabled server-side).
 
 ⚙ Settings → AI Providers:
 - Profile = name + base URL + model + API keys (one per line, failover order)
+- Use the provider's **API base URL**, not its website URL. Examples:
+  - OpenAI: `https://api.openai.com/v1`
+  - OpenRouter: `https://openrouter.ai/api/v1`
+  - Groq: `https://api.groq.com/openai/v1`
+  - Ollama: `http://localhost:11434/v1`
+  - LM Studio: `http://localhost:1234/v1`
+- The backend automatically tries common `/v1`, `/api/v1`, and `/api` paths if the pasted root returns a 404.
 - "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in

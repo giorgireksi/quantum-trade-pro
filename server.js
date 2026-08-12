@@ -17,32 +17,76 @@ const FILE = path.join(__dirname, 'online_viewer_net (4).html');
 const json = (res, code, obj) => { res.writeHead(code, {'Content-Type': 'application/json'}); res.end(JSON.stringify(obj)); };
 const readBody = async (req) => { let b = ''; for await (const c of req) b += c; return b; };
 
-// Call an OpenAI-compatible /chat/completions with per-key failover (401/403/429/5xx).
+// OpenAI-compatible providers commonly expose one of these roots. Users often
+// paste the website root (for example https://openrouter.ai) instead of its API
+// root (https://openrouter.ai/api/v1), so try the common paths automatically.
+function apiRoots(baseUrl){
+  const raw = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if(!raw) return [];
+  if(/\/chat\/completions$/i.test(raw)) return [raw.replace(/\/chat\/completions$/i, '')];
+  const roots = [raw];
+  if(!/\/v1$/i.test(raw)) roots.push(raw + '/v1');
+  if(!/\/api\/v1$/i.test(raw)) roots.push(raw + '/api/v1');
+  if(!/\/api$/i.test(raw)) roots.push(raw + '/api');
+  return [...new Set(roots)];
+}
+
+function compactProviderBody(text, contentType){
+  const value = String(text || '').trim();
+  if(/html/i.test(contentType || '') || /^<!doctype html|^<html/i.test(value)){
+    return 'HTML page returned (this is probably a website URL, not the provider API URL)';
+  }
+  return value.replace(/\s+/g, ' ').slice(0, 240);
+}
+
+async function providerRequest(baseUrl, suffix, options){
+  const roots = apiRoots(baseUrl);
+  if(!roots.length) throw new Error('AI provider base URL is empty');
+  let last = null;
+  for(const root of roots){
+    const url = root + suffix;
+    try{
+      const r = await fetch(url, options);
+      const text = await r.text();
+      if(r.ok) {
+        let body;
+        try { body = JSON.parse(text); } catch(e) {
+          last = new Error('HTTP ' + r.status + ': provider returned non-JSON data at ' + url);
+          continue;
+        }
+        return { response: r, body, url };
+      }
+      const msg = 'HTTP ' + r.status + (text ? ': ' + compactProviderBody(text, r.headers.get('content-type')) : '');
+      last = new Error(msg + ' [' + url + ']');
+      // 404 means the API path is wrong; try /v1 and /api/v1. Auth/rate/server
+      // errors mean the endpoint was reached and should not be masked by another path.
+      if(r.status !== 404) break;
+    }catch(e){
+      last = e;
+      // A network error is not fixed by adding a path.
+      break;
+    }
+  }
+  throw last || new Error('Provider request failed');
+}
+
+// Call an OpenAI-compatible /chat/completions with per-key failover.
 async function callProvider(baseUrl, model, apiKeys, messages, temperature){
   const keys = (Array.isArray(apiKeys) && apiKeys.length) ? apiKeys : [null];
-  const base = String(baseUrl || '').replace(/\/+$/, '');
-  if(!base) throw new Error('AI provider base URL is empty');
   if(!model) throw new Error('AI provider model is empty');
   let lastErr = null;
   for(const key of keys){
     const headers = { 'Content-Type': 'application/json' };
     if(key) headers['Authorization'] = 'Bearer ' + key;
     try{
-      const r = await fetch(base + '/chat/completions', {
+      const result = await providerRequest(baseUrl, '/chat/completions', {
         method: 'POST', headers,
         body: JSON.stringify({ model, messages, temperature: temperature ?? 0.2 })
       });
-      if(!r.ok){
-        const txt = await r.text();
-        const msg = 'HTTP ' + r.status + (txt ? ': ' + txt.slice(0, 300) : '');
-        if(![401, 403, 429, 500, 502, 503, 504].includes(r.status)) throw new Error(msg);
-        lastErr = new Error(msg);
-        continue;
-      }
-      return await r.json();
+      return result.body;
     }catch(e){
       lastErr = e;
-      if(!/HTTP (4|5)\d\d/.test(String(e && e.message))) break; // network error -> don't keep flipping keys
+      if(!/HTTP (401|403|429|500|502|503|504)/.test(String(e && e.message))) break;
     }
   }
   throw lastErr || new Error('All API keys failed');
@@ -74,12 +118,10 @@ const server = http.createServer(async (req, res) => {
   if(req.method === 'POST' && req.url === '/api/ai/test'){
     let p; try{ p = JSON.parse(await readBody(req)); }catch(e){ return json(res, 400, { error: 'bad json' }); }
     try{
-      const base = String(p.baseUrl || '').replace(/\/+$/, '');
       const headers = {};
       if(p.apiKey) headers['Authorization'] = 'Bearer ' + p.apiKey;
-      const r = await fetch(base + '/models', { method: 'GET', headers });
-      const txt = await r.text();
-      json(res, 200, { status: r.status, ok: r.ok, body: txt.slice(0, 200) });
+      const result = await providerRequest(p.baseUrl, '/models', { method: 'GET', headers });
+      json(res, 200, { status: result.response.status, ok: true, url: result.url, body: result.body });
     }catch(e){
       json(res, 200, { ok: false, error: String((e && e.message) || e) });
     }
