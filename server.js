@@ -9,6 +9,7 @@
 // Usage:  node server.js          ->  http://localhost:8080
 //         PORT=9000 node server.js
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const PORT = Number(process.env.PORT) || 8080;
@@ -19,6 +20,10 @@ const readBody = async (req) => { let b = ''; for await (const c of req) b += c;
 // Accept either a raw token or a copied "Bearer <token>" value.
 function cleanApiKey(value){
   return String(value || '').trim().replace(/^Bearer\s+/i, '').replace(/^['"]|['"]$/g, '');
+}
+function keyFingerprint(value){
+  const token = cleanApiKey(value);
+  return token ? crypto.createHash('sha256').update(token).digest('hex').slice(0, 10) : 'none';
 }
 
 // OpenAI-compatible providers commonly expose one of these roots. Users often
@@ -194,14 +199,15 @@ async function callGemini(baseUrl, model, key, messages, temperature){
 }
 
 async function diagnoseNvidia403(baseUrl, key, original){
+  const fingerprint = keyFingerprint(key);
   try{
     if(new URL(String(baseUrl)).hostname !== 'integrate.api.nvidia.com') return original;
     const probe = await providerRequest(baseUrl, '/models', { method: 'GET', headers: providerHeaders(baseUrl, key) });
     if(probe && probe.response && probe.response.ok){
-      return new Error(String(original.message) + ' NVIDIA /models accepts this key, but /chat/completions is forbidden. The key/account lacks hosted inference or Public API Endpoints permission, or this model is not enabled for the account.');
+      return new Error(String(original.message) + ' NVIDIA /models accepts this key, but /chat/completions is forbidden. Key fingerprint ' + fingerprint + '. The key/account lacks hosted inference or Public API Endpoints permission, or this model is not enabled for the account.');
     }
   }catch(probeErr){
-    return new Error(String(original.message) + ' NVIDIA /models also rejected this key. The key is invalid, revoked, from the wrong NVIDIA service, or its organization lacks hosted API permission.');
+    return new Error(String(original.message) + ' NVIDIA /models also rejected this key. Key fingerprint ' + fingerprint + '. The key is invalid, revoked, from the wrong NVIDIA service, or its organization lacks hosted API permission.');
   }
   return original;
 }
@@ -212,6 +218,7 @@ async function callProvider(baseUrl, protocol, model, apiKeys, messages, tempera
   if(!model) throw new Error('AI provider model is empty');
   const kind = detectProtocol(baseUrl, protocol);
   let lastErr = null;
+  let lastKey = null;
   for(const key of keys){
     try{
       if(kind === 'anthropic') return await callAnthropic(baseUrl, model, key, messages, temperature);
@@ -220,11 +227,12 @@ async function callProvider(baseUrl, protocol, model, apiKeys, messages, tempera
       return await callOpenAI(baseUrl, model, key, messages, temperature);
     }catch(e){
       lastErr = e;
+      lastKey = key;
       if(!/HTTP (401|403|429|500|502|503|504)/.test(String(e && e.message))) break;
     }
   }
-  if(lastErr && /HTTP 403/.test(String(lastErr.message)) && keys[0]){
-    throw await diagnoseNvidia403(baseUrl, keys[0], lastErr);
+  if(lastErr && /HTTP 403/.test(String(lastErr.message)) && lastKey){
+    throw await diagnoseNvidia403(baseUrl, lastKey, lastErr);
   }
   throw lastErr || new Error('All API keys failed');
 }
