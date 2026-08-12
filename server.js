@@ -86,20 +86,13 @@ function detectProtocol(baseUrl, requested){
 function providerHeaders(baseUrl, key){
   const headers = {
     'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'User-Agent': 'Quantum-Trade-Pro/1.0'
+    'Accept': 'application/json'
   };
   const token = cleanApiKey(key);
   if(token) headers['Authorization'] = 'Bearer ' + token;
-  try{
-    if(new URL(String(baseUrl)).hostname === 'integrate.api.nvidia.com'){
-      // Match OpenCode's hosted NVIDIA request identity.
-      headers['HTTP-Referer'] = 'https://opencode.ai/';
-      headers['X-Title'] = 'opencode';
-      headers['X-BILLING-INVOKE-ORIGIN'] = 'OpenCode';
-    }
-  }catch(_){}
-  return headers;
+  // Deliberately do not add OpenCode/browser attribution headers. NVIDIA's
+  // generated Python example uses only Authorization + Accept, so hosted NIM
+  // requests from this app must match that canonical shape.
 }
 
 function messageText(content){
