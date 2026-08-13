@@ -26,7 +26,7 @@ function readResourceState(){ try{return JSON.parse(fs.readFileSync(resourceStat
 function resourceKey(kind,name){ const value=String(name || ''); return kind==='extension' && /qpro-tools(?:\.ts)?$/i.test(value) ? 'qpro-tools' : value; }
 function resourceIsEnabled(kind,name){ return readResourceState().disabled?.[kind]?.[resourceKey(kind,name)] !== true; }
 
-const INDICATOR_CONTRACT = `# Quantum Trade Pro indicator workspace
+const INDICATOR_CONTRACT = `# Quantum Trade Pro indicator engineering contract
 
 This is an isolated coding workspace for custom indicators. Do not edit the
 application HTML, server.js, or files outside this workspace.
@@ -111,7 +111,7 @@ streams response, tool activity, compaction, retry, and lifecycle events. The
 Indicator lifecycle:
 1. Pi reads AGENTS.md and INDICATOR_CONTRACT.md.
 2. Pi creates or edits indicators/*.js in this workspace using normal coding tools.
-3. The browser receives the changed file and extracts QPRO_CODE.
+3. The browser receives changed indicator files and sends them through the QPRO review/import boundary.
 4. The browser validates with buildIndicatorRuntime(), performs a dry run against
    chartData, and only then offers Import or updates an existing indicator.
 5. executeCustomIndicator() renders lines, panes, bands, levels, markers, and

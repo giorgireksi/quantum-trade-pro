@@ -28,25 +28,14 @@ natively here.
 
 ## 2. Single-file mode (file://)
 
-Open `online_viewer_net (4).html` directly. AI calls then hit the provider
-from the browser, so the provider must allow browser requests (CORS). The app
-tries direct first, then automatically falls back to a CORS proxy when blocked
-and saves the working config. Endpoints that block ALL browser origins will
-only work reliably in Backend mode (or with CORS enabled server-side).
+Always run QPRO through `./open_qpro.sh`; the browser UI connects to the local native Pi backend.
 
 ## AI setup
 
-⚙ Settings → AI Providers:
-- Profile = name + protocol + base URL + model + API keys (one per line, failover order)
-- Choose **Auto-detect** for most services. The backend supports OpenAI-compatible Chat Completions, OpenAI Responses, Anthropic Messages, and Google Gemini GenerateContent APIs.
-- OpenAI-compatible covers OpenAI, NVIDIA NIM, OpenRouter, Groq, DeepSeek, Together, Mistral, xAI, Cline, Ollama, LM Studio, and other compatible gateways.
-- Use the provider's **API base URL**, not its website URL. Examples:
-  - OpenAI: `https://api.openai.com/v1`
-  - OpenRouter: `https://openrouter.ai/api/v1`
-  - Groq: `https://api.groq.com/openai/v1`
-  - Ollama: `http://localhost:11434/v1`
-  - LM Studio: `http://localhost:1234/v1`
-- The backend automatically tries common `/v1`, `/api/v1`, and `/api` paths if the pasted root returns a 404.
+Open the AI Assistant and select ⚙ Pi settings:
+- Choose a native Pi CLI model and thinking level.
+- Native Pi owns providers, authentication, skills, extensions, prompts, and model discovery through `~/.pi/agent/`.
+- QPRO adds only adaptive platform instructions and the lazy semantic platform gateway.
 - "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in
 - The Model field has a searchable model picker. NVIDIA NIM's **↻ Models** button loads the live catalog securely through the local backend; if unavailable, a curated NVIDIA fallback list remains available.
