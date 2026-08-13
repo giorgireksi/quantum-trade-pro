@@ -28,9 +28,11 @@ function chartRequestFile(cwd: string, id: string) {
 async function requestChartAction(cwd: string, toolCallId: string, action: string, params: any, signal?: AbortSignal) {
   const file = chartRequestFile(cwd, toolCallId);
   writeFileSync(file, JSON.stringify({ type: "chart_request", requestId: toolCallId, action, params, decision: "pending", createdAt: Date.now() }, null, 2));
+  const deadline = Date.now() + 30000;
   try {
     while (true) {
       if (signal?.aborted) throw new Error("Request cancelled");
+      if (Date.now() >= deadline) throw new Error("QPRO chart request timed out; the browser may be disconnected");
       if (existsSync(file)) {
         try {
           const value = JSON.parse(readFileSync(file, "utf8"));
@@ -110,6 +112,7 @@ export default function qproTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "qpro_platform",
     label: "QPRO Platform",
+    promptSnippet: "Use for explicit chart, market-data, watchlist, alert, workspace, layout, replay, or platform actions; choose the smallest operation and verify writes.",
     description: "Lazy gateway to QPRO platform capabilities. Use only when the user request needs live platform state or an action; do not inspect everything by default. Choose one operation per need. Read operations: get_state, get_data_summary, analyze_data, get_watchlist, get_alerts, get_settings, get_workspace_summary, get_indicator_settings, get_action_history. Action operations: switch_symbol, set_timeframe, set_type, set_indicator, set_indicator_settings, create_drawing, delete_drawing, clear_drawings, create_alert, delete_alert, set_setting, set_layout, replay_control, create_drawing_group, update_drawing_group, delete_drawing_group, switch_tab, undo, redo, apply_template. Ask for clarification when parameters are missing; verify results after consequential actions.",
     parameters: Type.Object({ operation: Type.String(), params: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
     async execute(id, params, signal, _onUpdate, ctx) {
@@ -124,95 +127,6 @@ export default function qproTools(pi: ExtensionAPI) {
       const result=await requestChartAction(ctx.cwd,id,"platform",{operation,params:params.params || {}},signal);
       return {content:[{type:"text",text:JSON.stringify(result)}],details:{operation}};
     },
-  });
-  pi.registerTool({
-    name: "qpro_get_workspace_context",
-    label: "QPRO Workspace Context",
-    description: "Remind the agent to read the QPRO indicator contract, architecture, and workspace files before indicator work.",
-    parameters: Type.Object({}),
-    async execute() {
-      return { content: [{ type: "text", text: "Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md with the read tool. Work in indicators/*.js and let the browser validate code before import." }], details: {} };
-    },
-  });
-  pi.registerTool({
-    name: "qpro_get_chart_context",
-    label: "QPRO Chart Context",
-    description: "Read the latest symbol, timeframe, selected indicators, notes, and chart context supplied by Quantum Trade Pro.",
-    parameters: Type.Object({}),
-    async execute(_id, _params, _signal, _onUpdate, ctx) {
-      const file=join(ctx.cwd,"QPRO_CHART_CONTEXT.md");
-      return {content:[{type:"text",text:existsSync(file)?readFileSync(file,"utf8"):"No live chart context has been supplied yet."}],details:{path:file}};
-    },
-  });
-  pi.registerTool({
-    name: "qpro_indicator_list",
-    label: "QPRO Built-in Indicators",
-    description: "List all built-in QPRO indicators and whether each is currently active on the chart.",
-    parameters: Type.Object({}),
-    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "list_indicators", {}, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_indicator_set",
-    label: "Set Built-in Indicator",
-    description: "Enable or disable a built-in QPRO indicator by its id. This changes the chart immediately after the semantic request is confirmed by the platform.",
-    parameters: Type.Object({ id: Type.String(), enabled: Type.Boolean() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_indicator", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_get_state",
-    label: "QPRO Chart State",
-    description: "Read the live QPRO chart symbol, timeframe, chart type, indicators, drawings, and bar count.",
-    parameters: Type.Object({}),
-    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "get_state", {}, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_switch_symbol",
-    label: "Switch Chart Symbol",
-    description: "Switch the active QPRO chart symbol using the platform's semantic chart API.",
-    parameters: Type.Object({ symbol: Type.String() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "switch_symbol", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_set_timeframe",
-    label: "Set Chart Timeframe",
-    description: "Change the active QPRO chart timeframe, preserving the platform's imported-data rules.",
-    parameters: Type.Object({ timeframe: Type.String() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_timeframe", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_set_type",
-    label: "Set Chart Type",
-    description: "Change the QPRO chart type, such as candles, bars, line, area, or heikinashi.",
-    parameters: Type.Object({ type: Type.String() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "set_type", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_drawings",
-    label: "List Chart Drawings",
-    description: "List semantic chart drawing objects with their logical time/price points.",
-    parameters: Type.Object({}),
-    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "list_drawings", {}, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_create_drawing",
-    label: "Create Chart Drawing",
-    description: "Create a drawing using logical time/price points. Use only when the user requested a chart annotation.",
-    parameters: Type.Object({ type: Type.String(), points: Type.Array(Type.Object({ time: Type.Number(), price: Type.Number() })), style: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "create_drawing", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_delete_drawing",
-    label: "Delete Chart Drawing",
-    description: "Delete a chart drawing after the user has clearly requested that deletion.",
-    parameters: Type.Object({ id: Type.String() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "delete_drawing", params, signal)) }], details: {} }; },
-  });
-  pi.registerTool({
-    name: "qpro_chart_clear_drawings",
-    label: "Clear Chart Drawings",
-    description: "Remove all chart drawings after the user has clearly requested it.",
-    parameters: Type.Object({}),
-    async execute(id, _params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "clear_drawings", {}, signal)) }], details: {} }; },
   });
   pi.registerTool({
     name: "qpro_indicator_validate",

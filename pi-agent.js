@@ -128,8 +128,40 @@ Important browser functions:
 Before consequential actions, use qpro_request_approval and wait for the user's decision. Use qpro_ask_user when an implementation choice is genuinely ambiguous. Do not bypass the browser validator or claim that a file is applied until the user imports it or the platform explicitly confirms the update.
 `;
 function writeChartContext(payload){
-  const context=String(payload.workspaceContext || '');
-  if(context) fs.writeFileSync(path.join(workspaceRoot,'QPRO_CHART_CONTEXT.md'), '# Current chart context\n\n'+context+'\n');
+  const file=path.join(workspaceRoot,'QPRO_CHART_CONTEXT.md');
+  const context=String(payload.workspaceContext || '').trim();
+  if(context){
+    const next='# Current chart context\n\n'+context+'\n';
+    let previous=''; try{previous=fs.readFileSync(file,'utf8');}catch(error){if(error.code !== 'ENOENT') throw error;}
+    if(previous !== next) fs.writeFileSync(file,next);
+  } else try{fs.unlinkSync(file);}catch(error){if(error.code !== 'ENOENT') throw error;}
+}
+function latestPayloadText(payload){
+  const latest=[...(payload?.messages || [])].reverse().find(m=>m && m.role==='user');
+  return textBlock(latest?.content).trim();
+}
+function configureSessionTools(session,payload={}){
+  const text=latestPayloadText(payload).toLowerCase();
+  const explicitIndicator=payload.indicatorTask === true;
+  const indicatorContract=explicitIndicator ? ' Read INDICATOR_CONTRACT.md before implementing an indicator, validate it, and save it under indicators/.' : '';
+  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|current price|latest price|market data|price data|indicator on (the )?chart|set .*timeframe)\b/i.test(text);
+  const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(text);
+  const codingAction=explicitIndicator || /\b(create|implement|modify|edit|fix|debug|refactor|write|build|code|javascript|typescript|pine ?script|file)\b/i.test(text);
+  const workspaceRead=/\b(workspace|codebase|repository|repo|project files?|inspect files?|read files?)\b/i.test(text);
+  const complex=/\b(subagent|sub-agent|delegate|parallel|team|multi[- ]step|complex)\b/i.test(text);
+  const available=new Set(session.getAllTools().map(tool=>tool.name));
+  const names=new Set();
+  const add=(...items)=>items.forEach(name=>{if(available.has(name)) names.add(name);});
+  if(codingAction || workspaceRead) add('read','grep','find','ls');
+  if(codingAction) add('edit','write','bash');
+  if(platformIntent) add('qpro_platform','qpro_request_approval','qpro_ask_user');
+  if(explicitIndicator) add('qpro_indicator_list','qpro_indicator_validate','qpro_indicator_import');
+  if(researchIntent) add('web_search','source_check','fetch_content','get_search_content');
+  if(complex) add('subagent');
+  // Keep ordinary conversation tool-free. This is intentional: tool schemas are
+  // part of every model request and are unnecessary for greetings/explanations.
+  session.setActiveToolsByName([...names]);
+  return {tools:[...names],profile:{codingAction,platformIntent,researchIntent,explicitIndicator,complex},indicatorContract};
 }
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
@@ -172,14 +204,28 @@ function textBlock(content){
   if(!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
   return content.map(x => typeof x === 'string' ? x : (x && (x.text || x.content) || '')).join('');
 }
-function promptWithHistory(messages){
-  const usable=(messages || []).filter(m=>m && m.role !== 'system');
-  return usable.length ? usable.map(m=>(m.role === 'assistant'?'Assistant: ':'User: ')+textBlock(m.content)).join('\n\n') : 'You are starting a new QPRO conversation. Greet the user naturally and ask what they would like help with across the trading platform; do not assume they want an indicator.';
+function promptWithHistory(messages, maxChars=24000){
+  const usable=(messages || []).filter(m=>m && m.role !== 'system' && (m.role === 'user' || m.role === 'assistant'));
+  if(!usable.length) return 'You are starting a new QPRO conversation. Greet the user naturally and ask what they would like help with across the trading platform; do not assume they want an indicator.';
+  const selected=[]; let chars=0;
+  for(let i=usable.length-1;i>=0;i--){
+    const m=usable[i]; const content=textBlock(m.content).trim();
+    if(!content) continue;
+    const line=(m.role === 'assistant'?'Assistant: ':'User: ')+content;
+    if(selected.length && chars+line.length > maxChars) break;
+    selected.unshift(line); chars += line.length;
+  }
+  const omitted=usable.length-selected.length;
+  return (omitted ? `[Earlier conversation omitted for context efficiency: ${omitted} message(s)]\n\n` : '')+selected.join('\n\n');
 }
-function workspaceFiles(){
-  ensureWorkspace(); const out=[];
-  const walk=(dir)=>{ for(const ent of fs.readdirSync(dir,{withFileTypes:true})){ const p=path.join(dir,ent.name); if(ent.isDirectory()) walk(p); else if(/\.(js|md|json|txt)$/i.test(ent.name)){ const rel=path.relative(workspaceRoot,p); const stat=fs.statSync(p); out.push({path:rel,size:stat.size,mtime:stat.mtimeMs,content:fs.readFileSync(p,'utf8')}); } } };
+function workspaceFiles(options={}){
+  ensureWorkspace(); const out=[]; const includeContent=options.includeContent !== false; const maxContent=Number(options.maxContent || 120000);
+  const walk=(dir)=>{ for(const ent of fs.readdirSync(dir,{withFileTypes:true})){ const p=path.join(dir,ent.name); if(ent.isDirectory()) walk(p); else if(/\.(js|md|json|txt)$/i.test(ent.name)){ const rel=path.relative(workspaceRoot,p); const stat=fs.statSync(p); const item={path:rel,size:stat.size,mtime:stat.mtimeMs}; if(includeContent && stat.size<=maxContent) item.content=fs.readFileSync(p,'utf8'); out.push(item); } } };
   walk(workspaceRoot); return out;
+}
+function changedWorkspaceFiles(before){
+  const current=workspaceFiles({includeContent:true}); const map=new Map((before || []).map(f=>[f.path,Number(f.mtime||0)]));
+  return current.filter(f=>!map.has(f.path)||Number(f.mtime||0)>map.get(f.path)+1);
 }
 async function createSession(payload){
   ensureWorkspace();
@@ -206,10 +252,7 @@ async function createSession(payload){
   else if(payload.forceNew) sessionManager=pi.SessionManager.create(workspaceRoot,sessionDir);
   else sessionManager=pi.SessionManager.continueRecent(workspaceRoot,sessionDir);
   const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
-  // The CLI exposes its registered tools through the active session. Enable all
-  // native built-ins and loaded extension tools so QPRO does not silently lose
-  // Pi abilities merely because it is embedded in a browser.
-  session.setActiveToolsByName(session.getAllTools().map(tool => tool.name));
+  configureSessionTools(session,payload);
   const commands=(extensionsResult.runtime.getCommands ? extensionsResult.runtime.getCommands() : []).map(command => ({name:command.name,description:command.description || '',source:command.source || 'extension',sourceInfo:command.sourceInfo ? {path:command.sourceInfo.path,scope:command.sourceInfo.scope,origin:command.sourceInfo.origin} : undefined}));
   return {session,runtime,model,protocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0,telemetry:{startedAt:Date.now(),compactions:[],retries:[],subagents:new Map()}};
 }
@@ -272,13 +315,14 @@ function sessionForPayload(payload){
   return entry ? Promise.resolve(entry) : createSession(payload).then(created=>{sessions.set(id,created);return created;});
 }
 function makePrompt(entry,payload){
-  const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+payload.workspaceContext:'';
+  const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+String(payload.workspaceContext).slice(0,18000):'';
   const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
   const latestText=textBlock(latest && latest.content).trim();
   // Preserve slash commands exactly. Pi's AgentSession expands extension
-  // commands, prompt templates, and skills when prompt() receives the raw /… text.
+  // commands, prompt templates, and skills when prompt() receives raw /… text.
   if(/^\/\S+/.test(latestText)) return latestText;
-  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + '\n\nUse the smallest necessary workspace or QPRO platform capability only when the request requires it. Do not assume indicator work; answer general conversation naturally. If you create or modify an indicator, save it under indicators/ and report the relative path.';
+  const indicatorDirective=payload.indicatorTask ? '\n\nExplicit indicator task: read INDICATOR_CONTRACT.md, inspect only relevant indicator files, validate before proposing import, and never claim application until QPRO confirms it.' : '';
+  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + indicatorDirective;
 }
 function finalAssistantText(session, streamed){
   if(streamed) return streamed;
@@ -289,7 +333,8 @@ async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
   if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
   const entry=await sessionForPayload(payload);
-  const beforeWorkspaceFiles=workspaceFiles();
+  configureSessionTools(entry.session,payload);
+  const beforeWorkspaceFiles=workspaceFiles({includeContent:false});
   const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map();
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
@@ -320,9 +365,8 @@ async function streamPiAgent(payload, res){
     await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
-    const files=workspaceFiles(); const before=new Map(beforeWorkspaceFiles.map(f=>[f.path,Number(f.mtime||0)]));
-    const changedFiles=files.filter(f=>!before.has(f.path)||Number(f.mtime||0)>before.get(f.path)+1);
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files,changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    const changedFiles=changedWorkspaceFiles(beforeWorkspaceFiles);
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
@@ -336,8 +380,8 @@ async function runPiAgent(payload){
   let result;
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
-  const entry=await sessionForPayload(payload); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
-  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
+  const entry=await sessionForPayload(payload); configureSessionTools(entry.session,payload); const beforeWorkspaceFiles=workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),changedFiles:changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
   const id=sessionKey(payload); const old=sessions.get(id);
