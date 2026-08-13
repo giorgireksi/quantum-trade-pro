@@ -146,6 +146,8 @@ function configureSessionTools(session,payload={}){
   const indicatorContract=explicitIndicator ? ' Read INDICATOR_CONTRACT.md before implementing an indicator, validate it, and save it under indicators/.' : '';
   const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|current price|latest price|market data|price data|indicator on (the )?chart|set .*timeframe)\b/i.test(text);
   const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(text);
+  const sourceIntent=/\b(source|sources|citation|citations|verify|fact[- ]check|claim)\b/i.test(text);
+  const fetchIntent=/\b(url|website|youtube|video|github|repository)\b/i.test(text);
   const codingAction=explicitIndicator || /\b(create|implement|modify|edit|fix|debug|refactor|write|build|code|javascript|typescript|pine ?script|file)\b/i.test(text);
   const workspaceRead=/\b(workspace|codebase|repository|repo|project files?|inspect files?|read files?)\b/i.test(text);
   const complex=/\b(subagent|sub-agent|delegate|parallel|team|multi[- ]step|complex)\b/i.test(text);
@@ -156,12 +158,16 @@ function configureSessionTools(session,payload={}){
   if(codingAction) add('edit','write','bash');
   if(platformIntent) add('qpro_platform','qpro_request_approval','qpro_ask_user');
   if(explicitIndicator) add('qpro_indicator_list','qpro_indicator_validate','qpro_indicator_import');
-  if(researchIntent) add('web_search','source_check','fetch_content','get_search_content');
+  if(researchIntent){
+    if(fetchIntent) add('fetch_content','get_search_content');
+    else if(sourceIntent) add('source_check','get_search_content');
+    else add('web_search');
+  }
   if(complex) add('subagent');
   // Keep ordinary conversation tool-free. This is intentional: tool schemas are
   // part of every model request and are unnecessary for greetings/explanations.
   session.setActiveToolsByName([...names]);
-  return {tools:[...names],profile:{codingAction,platformIntent,researchIntent,explicitIndicator,complex},indicatorContract};
+  return {tools:[...names],profile:{codingAction,platformIntent,researchIntent,sourceIntent,fetchIntent,explicitIndicator,complex},indicatorContract};
 }
 function ensureWorkspace(){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
@@ -333,6 +339,7 @@ async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
   if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
   const entry=await sessionForPayload(payload);
+  writeChartContext(payload);
   configureSessionTools(entry.session,payload);
   const beforeWorkspaceFiles=workspaceFiles({includeContent:false});
   const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map();
@@ -366,7 +373,7 @@ async function streamPiAgent(payload, res){
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
     const changedFiles=changedWorkspaceFiles(beforeWorkspaceFiles);
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
@@ -380,7 +387,7 @@ async function runPiAgent(payload){
   let result;
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
-  const entry=await sessionForPayload(payload); configureSessionTools(entry.session,payload); const beforeWorkspaceFiles=workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  const entry=await sessionForPayload(payload); writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeWorkspaceFiles=workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
   try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),changedFiles:changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
