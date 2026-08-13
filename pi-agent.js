@@ -164,7 +164,7 @@ function ensureWorkspace(){
   const contract = path.join(workspaceRoot,'INDICATOR_CONTRACT.md');
   if(!fs.existsSync(contract)) fs.writeFileSync(contract,INDICATOR_CONTRACT);
   const readme = path.join(workspaceRoot,'README.md');
-  if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# Pi Indicator Workspace\n\nEdit files in `indicators/`. The chart imports validated files from the Pi assistant.\n');
+  if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# QPRO Pi Platform Workspace\n\nThis workspace supports general conversation, chart analysis, platform control, workspace inspection, and indicator engineering. Use `indicators/` for validated custom indicators.\n');
 }
 ensureWorkspace();
 function textBlock(content){
@@ -278,7 +278,7 @@ function makePrompt(entry,payload){
   // Preserve slash commands exactly. Pi's AgentSession expands extension
   // commands, prompt templates, and skills when prompt() receives the raw /… text.
   if(/^\/\S+/.test(latestText)) return latestText;
-  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + '\n\nUse the workspace tools when useful. If you create or modify an indicator, save it under indicators/ and report the relative path.';
+  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + '\n\nUse the smallest necessary workspace or QPRO platform capability only when the request requires it. Do not assume indicator work; answer general conversation naturally. If you create or modify an indicator, save it under indicators/ and report the relative path.';
 }
 function finalAssistantText(session, streamed){
   if(streamed) return streamed;
