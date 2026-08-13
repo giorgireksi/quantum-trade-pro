@@ -356,14 +356,14 @@ async function streamPiAgent(payload, res){
   writeChartContext(payload);
   configureSessionTools(entry.session,payload);
   const beforeWorkspaceFiles=workspaceFiles({includeContent:false});
-  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null;
+  const textParts=[]; const toolEvents=[]; const transcript=[]; let closed=false; let latestUsage=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null; let currentTranscript=null;
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
     if(event.type==='turn_start'){ turnIndex=event.turnIndex ?? (turnIndex+1); send('turn_start',{turnIndex,timestamp:event.timestamp || Date.now()}); }
-    else if(event.type==='message_start'){ currentMessageId='m_'+(++messageIndex); send('message_start',{messageId:currentMessageId,role:event.message?.role || 'unknown',turnIndex}); }
+    else if(event.type==='message_start'){ currentMessageId='m_'+(++messageIndex); currentTranscript=event.message?.role==='assistant'?{messageId:currentMessageId,turnIndex,text:''}:null; if(currentTranscript) transcript.push(currentTranscript); send('message_start',{messageId:currentMessageId,role:event.message?.role || 'unknown',turnIndex}); }
     else if(event.type==='message_update'){
       const ae=event.assistantMessageEvent; const common={messageId:currentMessageId,turnIndex,contentIndex:ae?.contentIndex};
-      if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{...common,delta}); }
+      if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); if(currentTranscript) currentTranscript.text += delta; send('text_delta',{...common,delta}); }
       else if(ae?.type==='text_start') send('text_start',common);
       else if(ae?.type==='text_end') send('text_end',{...common,content:ae.content || ''});
       else if(ae?.type==='thinking_start') send('thinking_start',common);
@@ -397,7 +397,7 @@ async function streamPiAgent(payload, res){
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
     const changedFiles=changedWorkspaceFiles(beforeWorkspaceFiles);
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,transcript:transcript.filter(item=>item.text),activeTools:entry.session.getActiveToolNames(),files:workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
