@@ -330,10 +330,24 @@ function makePrompt(entry,payload){
   const indicatorDirective=payload.indicatorTask ? '\n\nExplicit indicator task: read INDICATOR_CONTRACT.md, inspect only relevant indicator files, validate before proposing import, and never claim application until QPRO confirms it.' : '';
   return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + indicatorDirective;
 }
+function summarizeToolValue(value){
+  if(value == null) return null;
+  if(typeof value === 'string') return value.slice(0,4000);
+  if(Array.isArray(value)) return value.map(item=>summarizeToolValue(item)).slice(0,20);
+  if(typeof value === 'object'){
+    const out={}; for(const [key,item] of Object.entries(value).slice(0,30)){ if(/key|token|secret|authorization|password/i.test(key)) out[key]='[redacted]'; else out[key]=typeof item==='string'?item.slice(0,2000):summarizeToolValue(item); } return out;
+  }
+  return value;
+}
+function summarizeAgentMessage(message){
+  return {stopReason:message.stopReason,usage:message.usage || null,content:(Array.isArray(message.content)?message.content:[]).map(item=>item.type==='text'?{type:'text',text:String(item.text || '').slice(0,6000)}:item.type==='thinking'?{type:'thinking',text:'[hidden]'}:item.type==='toolCall'?{type:'toolCall',name:item.name,id:item.id,arguments:summarizeToolValue(item.arguments)}:{type:item.type}).slice(0,30)};
+}
 function finalAssistantText(session, streamed){
-  if(streamed) return streamed;
+  // Tool loops can contain several assistant messages. Native Pi renders those
+  // as separate transcript entries; QPRO should return only the final answer,
+  // not concatenate pre-tool narration with the settled response.
   for(let i=(session.messages || []).length-1;i>=0;i--){ const m=session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)) return textBlock(m.content); }
-  return '';
+  return streamed || '';
 }
 async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
@@ -342,28 +356,38 @@ async function streamPiAgent(payload, res){
   writeChartContext(payload);
   configureSessionTools(entry.session,payload);
   const beforeWorkspaceFiles=workspaceFiles({includeContent:false});
-  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map();
+  const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null;
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
-    if(event.type==='message_update'){
-      const ae=event.assistantMessageEvent;
-      if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{delta}); }
-      else if(ae?.type==='thinking_start') send('activity',{message:'Pi is reasoning…'});
-      else if(ae?.type==='thinking_end') send('activity',{message:'Pi finished reasoning'});
-    }else if(event.type==='message_end' && event.message?.role==='assistant'){
-      latestUsage=event.message.usage || null; send('usage',{usage:latestUsage,stats:sessionStats(entry)});
-    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {}}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); childControllers.set(item.toolCallId,createSubagentCancellationController(entry,item.toolCallId)); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',{tool:item.tool,toolCallId:item.toolCallId,input:item.input}); }
-    else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool'});
-    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',error:!!event.isError}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);const details=event.result?.details || event.result?.data?.details || {};if(details.asyncId)sub.asyncId=details.asyncId;if(details.asyncDir)sub.asyncDir=details.asyncDir;sub.status=item.error?(sub.status==='cancel_requested'?'cancelled':'error'):'complete';sub.finishedAt=Date.now();sub.error=item.error;childControllers.delete(event.toolCallId);send('subagent_end',{id:event.toolCallId,status:sub.status,asyncId:sub.asyncId});} send('tool_end',{tool:item.tool,error:item.error}); }
+    if(event.type==='turn_start'){ turnIndex=event.turnIndex ?? (turnIndex+1); send('turn_start',{turnIndex,timestamp:event.timestamp || Date.now()}); }
+    else if(event.type==='message_start'){ currentMessageId='m_'+(++messageIndex); send('message_start',{messageId:currentMessageId,role:event.message?.role || 'unknown',turnIndex}); }
+    else if(event.type==='message_update'){
+      const ae=event.assistantMessageEvent; const common={messageId:currentMessageId,turnIndex,contentIndex:ae?.contentIndex};
+      if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); send('text_delta',{...common,delta}); }
+      else if(ae?.type==='text_start') send('text_start',common);
+      else if(ae?.type==='text_end') send('text_end',{...common,content:ae.content || ''});
+      else if(ae?.type==='thinking_start') send('thinking_start',common);
+      // Private chain-of-thought is intentionally not forwarded to the browser.
+      // Native-style visibility is represented by thinking_start/end activity only.
+      else if(ae?.type==='thinking_end') send('thinking_end',common);
+      else if(ae?.type==='toolcall_start') send('toolcall_start',common);
+      else if(ae?.type==='toolcall_delta') send('toolcall_delta',{...common,delta:ae.delta || ''});
+      else if(ae?.type==='toolcall_end') send('toolcall_end',{...common,toolCall:ae.toolCall || null});
+    }else if(event.type==='message_end'){
+      send('message_end',{messageId:currentMessageId,turnIndex,role:event.message?.role || 'unknown'});
+      if(event.message?.role==='assistant'){ latestUsage=event.message.usage || null; send('usage',{usage:latestUsage,stats:sessionStats(entry)}); }
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {},turnIndex}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); childControllers.set(item.toolCallId,createSubagentCancellationController(entry,item.toolCallId)); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',item); }
+    else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool',toolCallId:event.toolCallId,partial:summarizeToolValue(event.partialResult),turnIndex});
+    else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',toolCallId:event.toolCallId,error:!!event.isError,result:summarizeToolValue(event.result),turnIndex}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);const details=event.result?.details || event.result?.data?.details || {};if(details.asyncId)sub.asyncId=details.asyncId;if(details.asyncDir)sub.asyncDir=details.asyncDir;sub.status=item.error?(sub.status==='cancel_requested'?'cancelled':'error'):'complete';sub.finishedAt=Date.now();sub.error=item.error;childControllers.delete(event.toolCallId);send('subagent_end',{id:event.toolCallId,status:sub.status,asyncId:sub.asyncId});} send('tool_end',item); }
     else if(event.type==='agent_start') send('agent_start');
-    else if(event.type==='agent_end') send('agent_end');
-    else if(event.type==='turn_start') send('turn_start');
-    else if(event.type==='turn_end') send('turn_end');
+    else if(event.type==='agent_end') send('agent_end',{willRetry:event.willRetry !== false});
+    else if(event.type==='agent_settled') send('agent_settled');
+    else if(event.type==='turn_end') send('turn_end',{turnIndex,toolResults:(event.toolResults || []).map(summarizeToolValue)});
     else if(event.type==='compaction_start'){entry.telemetry.compactions.push({startedAt:Date.now(),reason:event.reason || 'automatic'});send('compaction_start',{message:'Pi is compacting context…',reason:event.reason});}
-    else if(event.type==='compaction_end') send('compaction_end',{message:'Context compaction complete',result:event.result || null});
-    else if(event.type==='auto_retry_start'){entry.telemetry.retries.push({startedAt:Date.now(),attempt:event.attempt || entry.session.retryAttempt || 1,source:event.source || 'provider',error:event.errorMessage || ''});send('retry_start',{message:'Pi is retrying the provider request…',attempt:event.attempt || entry.session.retryAttempt || 1});}
-    else if(event.type==='auto_retry_end') send('retry_end');
-    else if(event.type==='queue_update') send('queue_update',{steering:event.steering || 0,followUp:event.followUp || 0});
+    else if(event.type==='compaction_end') send('compaction_end',{message:event.errorMessage || (event.aborted?'Context compaction aborted':'Context compaction complete'),reason:event.reason,result:event.result ? {summary:String(event.result.summary || '').slice(0,1000),tokensBefore:event.result.tokensBefore || null,estimatedTokensAfter:event.result.estimatedTokensAfter || null} : null,aborted:!!event.aborted,willRetry:!!event.willRetry,errorMessage:event.errorMessage});
+    else if(event.type==='auto_retry_start'){entry.telemetry.retries.push({startedAt:Date.now(),attempt:event.attempt || entry.session.retryAttempt || 1,source:event.source || 'provider',error:event.errorMessage || ''});send('retry_start',{message:'Pi is retrying the provider request…',attempt:event.attempt || entry.session.retryAttempt || 1,maxAttempts:event.maxAttempts,delayMs:event.delayMs,errorMessage:event.errorMessage});}
+    else if(event.type==='auto_retry_end') send('retry_end',{success:event.success,attempt:event.attempt,finalError:event.finalError});
+    else if(event.type==='queue_update') send('queue_update',{steering:Array.isArray(event.steering)?event.steering.length:(event.steering || 0),followUp:Array.isArray(event.followUp)?event.followUp.length:(event.followUp || 0)});
   });
   activeChats.set(chatId,{entry,payload,send,stopRequested:false,startedAt:Date.now()});
   res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });

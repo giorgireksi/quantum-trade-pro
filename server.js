@@ -108,7 +108,7 @@ const server = http.createServer(async (req, res) => {
     }catch(error){
       console.log(new Date().toISOString(), 'pi/stream err', error && error.message);
       if(!res.headersSent) return json(res, 502, {error:String(error && error.message || error)});
-      res.write('event: error\\ndata: '+JSON.stringify({type:'error',error:String(error && error.message || error)})+'\\n\\n');
+      res.write('event: error\ndata: '+JSON.stringify({type:'error',error:String(error && error.message || error)})+'\n\n');
       res.end();
     }
     return;
