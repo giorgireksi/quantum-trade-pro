@@ -286,6 +286,7 @@ async function streamPiAgent(payload, res){
   const chatId=String(payload.chatId || 'default');
   if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
   const entry=await sessionForPayload(payload);
+  const beforeWorkspaceFiles=workspaceFiles();
   const textParts=[]; const toolEvents=[]; let closed=false; let latestUsage=null; const childControllers=new Map();
   const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
@@ -316,7 +317,9 @@ async function streamPiAgent(payload, res){
     await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
     const content=finalAssistantText(entry.session,textParts.join(''));
     if(!content) throw new Error('Pi completed without an assistant response');
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles(),workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    const files=workspaceFiles(); const before=new Map(beforeWorkspaceFiles.map(f=>[f.path,Number(f.mtime||0)]));
+    const changedFiles=files.filter(f=>!before.has(f.path)||Number(f.mtime||0)>before.get(f.path)+1);
+    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,activeTools:entry.session.getActiveToolNames(),files,changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
