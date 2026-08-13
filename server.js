@@ -13,19 +13,25 @@ const FILE = path.join(__dirname, 'online_viewer_net (4).html');
 // the isolated Pi workspace so clearing browser storage cannot erase it.
 const QPRO_STATE_DIR = path.join(__dirname, '.qpro');
 const QPRO_STATE_FILE = path.join(QPRO_STATE_DIR, 'workspace-state.json');
+const QPRO_STATE_BACKUP = QPRO_STATE_FILE+'.bak';
 const piAgent = require('./pi-agent');
 
 function readQproState(){
-  try{
-    const stored=JSON.parse(fs.readFileSync(QPRO_STATE_FILE,'utf8'));
-    return {ok:true,exists:true,snapshot:stored && stored.snapshot ? stored.snapshot : stored,savedAt:stored?.savedAt};
-  }catch(error){if(error.code==='ENOENT')return {ok:true,exists:false,snapshot:null};throw error;}
+  let lastError=null;
+  for(const file of [QPRO_STATE_FILE,QPRO_STATE_BACKUP]) try{
+    const stored=JSON.parse(fs.readFileSync(file,'utf8'));
+    return {ok:true,exists:true,snapshot:stored && stored.snapshot ? stored.snapshot : stored,savedAt:stored?.savedAt,recovered:file===QPRO_STATE_BACKUP};
+  }catch(error){lastError=error;if(error.code==='ENOENT')continue;}
+  if(lastError?.code==='ENOENT')return {ok:true,exists:false,snapshot:null};
+  throw lastError || new Error('workspace state unavailable');
 }
 function writeQproState(snapshot){
   fs.mkdirSync(QPRO_STATE_DIR,{recursive:true});
   const temp=QPRO_STATE_FILE+'.tmp-'+process.pid+'-'+Date.now();
   fs.writeFileSync(temp,JSON.stringify({version:1,savedAt:Date.now(),snapshot},null,2),{encoding:'utf8',mode:0o600});
+  if(fs.existsSync(QPRO_STATE_FILE)) fs.copyFileSync(QPRO_STATE_FILE,QPRO_STATE_BACKUP);
   fs.renameSync(temp,QPRO_STATE_FILE);
+  try{if(fs.existsSync(QPRO_STATE_BACKUP))fs.chmodSync(QPRO_STATE_BACKUP,0o600);}catch(_){ }
   try{fs.chmodSync(QPRO_STATE_FILE,0o600);}catch(_){ }
   return {ok:true,savedAt:Date.now(),file:'.qpro/workspace-state.json'};
 }
