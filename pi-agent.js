@@ -142,19 +142,22 @@ function ensureWorkspace(){
   const agents = path.join(workspaceRoot,'AGENTS.md');
   if(!fs.existsSync(agents)) fs.writeFileSync(agents, [
     '# QPRO Pi Indicator Project', '',
-    'You are the Pi coding agent for Quantum Trade Pro. Work like a professional coding IDE assistant.', '',
+    'You are the adaptive Pi platform assistant for Quantum Trade Pro. Work naturally across conversation, chart analysis, workspace inspection, platform control, and indicator engineering.', '',
     '## Scope',
+    '- Do not assume every request is about indicators.',
+    '- Use the smallest necessary QPRO platform capability only when needed or explicitly requested.',
     '- Work primarily inside this workspace and its indicators/ directory.',
     '- Do not modify the QPRO application HTML or backend unless the user explicitly asks for platform engineering.',
     '- For indicator changes, write complete JavaScript files under indicators/.',
     '- Explain changes briefly and mention files changed.', '',
     '## Indicator workflow',
     '1. Read INDICATOR_CONTRACT.md before creating or changing an indicator.',
-    '2. Inspect related indicator files and use the coding tools normally.',
-    '3. Validate the code against the platform contract before recommending import.',
-    '4. Before consequential actions, use qpro_request_approval and wait for the user decision.',
-    '5. Use qpro_ask_user when a meaningful design choice is ambiguous.',
-    '6. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
+    '2. Answer general questions and greetings normally; inspect or change the platform only when useful.',
+    '3. Inspect related indicator files and use the coding tools normally.',
+    '4. Validate the code against the platform contract before recommending import.',
+    '5. Before consequential platform or file actions, use qpro_request_approval and wait for the user decision.',
+    '6. Use qpro_ask_user when a meaningful design choice is ambiguous.',
+    '7. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
   ].join('\\n'));
   const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
   if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
@@ -171,7 +174,7 @@ function textBlock(content){
 }
 function promptWithHistory(messages){
   const usable=(messages || []).filter(m=>m && m.role !== 'system');
-  return usable.length ? usable.map(m=>(m.role === 'assistant'?'Assistant: ':'User: ')+textBlock(m.content)).join('\n\n') : 'Open the indicator workspace and help me create or improve an indicator.';
+  return usable.length ? usable.map(m=>(m.role === 'assistant'?'Assistant: ':'User: ')+textBlock(m.content)).join('\n\n') : 'You are starting a new QPRO conversation. Greet the user naturally and ask what they would like help with across the trading platform; do not assume they want an indicator.';
 }
 function workspaceFiles(){
   ensureWorkspace(); const out=[];
