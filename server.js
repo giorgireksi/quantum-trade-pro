@@ -9,7 +9,26 @@ const fs = require('fs');
 const path = require('path');
 const PORT = Number(process.env.PORT) || 8080;
 const FILE = path.join(__dirname, 'online_viewer_net (4).html');
+// QPRO application state is server-owned, not browser-owned. Keep it beside
+// the isolated Pi workspace so clearing browser storage cannot erase it.
+const QPRO_STATE_DIR = path.join(__dirname, '.qpro');
+const QPRO_STATE_FILE = path.join(QPRO_STATE_DIR, 'workspace-state.json');
 const piAgent = require('./pi-agent');
+
+function readQproState(){
+  try{
+    const stored=JSON.parse(fs.readFileSync(QPRO_STATE_FILE,'utf8'));
+    return {ok:true,exists:true,snapshot:stored && stored.snapshot ? stored.snapshot : stored,savedAt:stored?.savedAt};
+  }catch(error){if(error.code==='ENOENT')return {ok:true,exists:false,snapshot:null};throw error;}
+}
+function writeQproState(snapshot){
+  fs.mkdirSync(QPRO_STATE_DIR,{recursive:true});
+  const temp=QPRO_STATE_FILE+'.tmp-'+process.pid+'-'+Date.now();
+  fs.writeFileSync(temp,JSON.stringify({version:1,savedAt:Date.now(),snapshot},null,2),{encoding:'utf8',mode:0o600});
+  fs.renameSync(temp,QPRO_STATE_FILE);
+  try{fs.chmodSync(QPRO_STATE_FILE,0o600);}catch(_){ }
+  return {ok:true,savedAt:Date.now(),file:'.qpro/workspace-state.json'};
+}
 
 const json = (res, code, obj) => {
   res.writeHead(code, {'Content-Type':'application/json'});
@@ -24,6 +43,18 @@ const server = http.createServer(async (req, res) => {
 
   if(req.method === 'GET' && req.url === '/api/ping'){
     return json(res, 200, {ok:true, token:'qpro', agent:'pi'});
+  }
+  if(req.method === 'GET' && req.url === '/api/qpro/workspace'){
+    try{return json(res,200,readQproState());}
+    catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'PUT' && req.url === '/api/qpro/workspace'){
+    let payload;
+    try{payload=JSON.parse(await readBody(req));}
+    catch(_){return json(res,400,{ok:false,error:'bad json'});}
+    if(!payload || !payload.snapshot || typeof payload.snapshot!=='object') return json(res,400,{ok:false,error:'snapshot object required'});
+    try{return json(res,200,writeQproState(payload.snapshot));}
+    catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
   }
 
   if(req.method === 'GET' && req.url === '/api/pi/commands'){
