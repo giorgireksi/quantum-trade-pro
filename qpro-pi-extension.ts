@@ -106,6 +106,25 @@ export default function qproTools(pi: ExtensionAPI) {
       ctx.ui.notify(plan.steps?.map((step: any) => `${step.done ? "✓" : "○"} ${step.text}`).join("\n") || "Empty plan", "info");
     },
   });
+  const platformWrites = new Set(["switch_symbol", "set_timeframe", "set_type", "set_indicator", "create_drawing", "delete_drawing", "clear_drawings", "create_alert", "delete_alert", "set_setting", "replay_control"]);
+  pi.registerTool({
+    name: "qpro_platform",
+    label: "QPRO Platform",
+    description: "Lazy gateway to QPRO platform capabilities. Use only when the user's request needs live platform state or an action; do not inspect everything by default. Choose one operation per need. Read operations: get_state, get_data_summary, get_watchlist, get_alerts, get_settings. Action operations: switch_symbol, set_timeframe, set_type, set_indicator, create_drawing, delete_drawing, clear_drawings, create_alert, delete_alert, set_setting, replay_control. Ask for clarification when parameters are missing; verify results after consequential actions.",
+    parameters: Type.Object({ operation: Type.String(), params: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
+    async execute(id, params, signal, _onUpdate, ctx) {
+      const operation=String(params.operation || "").trim();
+      if (!operation) throw new Error("platform operation is required");
+      if (platformWrites.has(operation)) {
+        const file=approvalFile(ctx.cwd, id);
+        writeFileSync(file, JSON.stringify({type:"approval",action:`QPRO platform action: ${operation}`,reason:"This changes the active trading workspace or chart.",risk:"normal",decision:"pending",createdAt:Date.now()}, null, 2));
+        try { const decision=await waitForDecision(file, signal); if(decision.decision!=="approve") return {content:[{type:"text",text:`Rejected by user: ${operation}`}],details:{approved:false,operation}}; }
+        finally { try { unlinkSync(file); } catch {} }
+      }
+      const result=await requestChartAction(ctx.cwd,id,"platform",{operation,params:params.params || {}},signal);
+      return {content:[{type:"text",text:JSON.stringify(result)}],details:{operation}};
+    },
+  });
   pi.registerTool({
     name: "qpro_get_workspace_context",
     label: "QPRO Workspace Context",
