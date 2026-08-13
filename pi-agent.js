@@ -144,7 +144,7 @@ function configureSessionTools(session,payload={}){
   const text=latestPayloadText(payload).toLowerCase();
   const explicitIndicator=payload.indicatorTask === true;
   const indicatorContract=explicitIndicator ? ' Read INDICATOR_CONTRACT.md before implementing an indicator, validate it, and save it under indicators/.' : '';
-  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|current price|latest price|market data|price data|indicator on (the )?chart|set .*timeframe)\b/i.test(text);
+  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|layout|quote|price|market data|price data|indicator on (the )?chart|turn on|turn off|toggle|enable|disable|set .*timeframe)\b/i.test(text);
   const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(text);
   const sourceIntent=/\b(source|sources|citation|citations|verify|fact[- ]check|claim)\b/i.test(text);
   const fetchIntent=/\b(url|website|youtube|video|github|repository)\b/i.test(text);
@@ -156,7 +156,7 @@ function configureSessionTools(session,payload={}){
   const add=(...items)=>items.forEach(name=>{if(available.has(name)) names.add(name);});
   if(codingAction || workspaceRead) add('read','grep','find','ls');
   if(codingAction) add('edit','write','bash');
-  if(platformIntent) add('qpro_platform','qpro_request_approval','qpro_ask_user');
+  if(platformIntent) add('qpro_platform','qpro_ask_user');
   if(explicitIndicator) add('qpro_indicator_list','qpro_indicator_validate','qpro_indicator_import');
   if(researchIntent){
     if(fetchIntent) add('fetch_content','get_search_content');
