@@ -106,11 +106,11 @@ export default function qproTools(pi: ExtensionAPI) {
       ctx.ui.notify(plan.steps?.map((step: any) => `${step.done ? "✓" : "○"} ${step.text}`).join("\n") || "Empty plan", "info");
     },
   });
-  const platformWrites = new Set(["switch_symbol", "set_timeframe", "set_type", "set_indicator", "create_drawing", "delete_drawing", "clear_drawings", "create_alert", "delete_alert", "set_setting", "replay_control"]);
+  const platformWrites = new Set(["switch_symbol", "set_timeframe", "set_type", "set_indicator", "create_drawing", "delete_drawing", "clear_drawings", "create_alert", "delete_alert", "set_setting", "set_layout", "replay_control", "create_drawing_group", "update_drawing_group", "delete_drawing_group", "switch_tab"]);
   pi.registerTool({
     name: "qpro_platform",
     label: "QPRO Platform",
-    description: "Lazy gateway to QPRO platform capabilities. Use only when the user's request needs live platform state or an action; do not inspect everything by default. Choose one operation per need. Read operations: get_state, get_data_summary, get_watchlist, get_alerts, get_settings. Action operations: switch_symbol, set_timeframe, set_type, set_indicator, create_drawing, delete_drawing, clear_drawings, create_alert, delete_alert, set_setting, replay_control. Ask for clarification when parameters are missing; verify results after consequential actions.",
+    description: "Lazy gateway to QPRO platform capabilities. Use only when the user request needs live platform state or an action; do not inspect everything by default. Choose one operation per need. Read operations: get_state, get_data_summary, analyze_data, get_watchlist, get_alerts, get_settings, get_workspace_summary. Action operations: switch_symbol, set_timeframe, set_type, set_indicator, create_drawing, delete_drawing, clear_drawings, create_alert, delete_alert, set_setting, set_layout, replay_control, create_drawing_group, update_drawing_group, delete_drawing_group, switch_tab. Ask for clarification when parameters are missing; verify results after consequential actions.",
     parameters: Type.Object({ operation: Type.String(), params: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
     async execute(id, params, signal, _onUpdate, ctx) {
       const operation=String(params.operation || "").trim();
