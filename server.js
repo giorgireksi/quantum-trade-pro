@@ -76,13 +76,15 @@ function writeValidationRecord(file,record){
   fs.mkdirSync(QPRO_VALIDATION_DIR,{recursive:true,mode:0o700});
   const temp=file+'.tmp-'+process.pid+'-'+Date.now(); fs.writeFileSync(temp,JSON.stringify(record),{encoding:'utf8',mode:0o600}); fs.renameSync(temp,file);
 }
-function createValidationRequest(rel){
+function createValidationRequest(rel,bars,warmup){
   const target=safeIndicatorPath(rel);
   if(!fs.existsSync(target.absolute)) throw new Error('indicator file not found');
+  const requestedBars=Number.isFinite(Number(bars)) && Number(bars)>0 ? Math.floor(Number(bars)) : null;
+  const requestedWarmup=Number.isFinite(Number(warmup)) && Number(warmup)>0 ? Math.floor(Number(warmup)) : 0;
   const id='v_'+Date.now().toString(36)+'_'+crypto.randomBytes(6).toString('hex');
   const file=validationFile(id);
-  writeValidationRecord(file,{id,path:target.rel,status:'pending',createdAt:Date.now()});
-  return {id,path:target.rel,file};
+  writeValidationRecord(file,{id,path:target.rel,status:'pending',bars:requestedBars,warmup:requestedWarmup,createdAt:Date.now()});
+  return {id,path:target.rel,bars:requestedBars,warmup:requestedWarmup,file};
 }
 function claimValidationRequest(){
   fs.mkdirSync(QPRO_VALIDATION_DIR,{recursive:true,mode:0o700});
@@ -199,14 +201,14 @@ const server = http.createServer(async (req, res) => {
       const file=validationFile(payload.id); const current=JSON.parse(fs.readFileSync(file,'utf8'));
       if(current.status!=='claimed') throw new Error('validation request is not claimed');
       const target=safeIndicatorPath(current.path); if(payload.path && String(payload.path)!==current.path) throw new Error('validation path mismatch');
-      writeValidationRecord(file,{...current,status:payload.error?'error':'complete',path:target.rel,hash:payload.hash||null,validation:payload.validation||null,error:payload.error||null,completedAt:Date.now()});
+      writeValidationRecord(file,{...current,status:payload.error?'error':'complete',path:target.rel,hash:payload.hash||null,validation:payload.validation||null,window:payload.window||null,error:payload.error||null,completedAt:Date.now()});
       return json(res,200,{ok:true,id:current.id});
     }catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
   }
   if(req.method === 'POST' && req.url === '/api/qpro/indicator-validate'){
     let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
     let record;
-    try{record=createValidationRequest(payload.path); const result=await waitForValidation(record); if(result.status==='error') return json(res,502,{ok:false,error:result.error||'browser validation failed',path:result.path,validation:result.validation||null}); return json(res,200,{ok:true,path:result.path,hash:result.hash||null,validation:result.validation||null});}
+    try{record=createValidationRequest(payload.path,payload.bars,payload.warmup); const result=await waitForValidation(record); if(result.status==='error') return json(res,502,{ok:false,error:result.error||'browser validation failed',path:result.path,validation:result.validation||null,window:result.window||null}); return json(res,200,{ok:true,path:result.path,hash:result.hash||null,validation:result.validation||null,window:result.window||{requested:record.bars,warmup:record.warmup}});}
     catch(error){return json(res,error?.statusCode||504,{ok:false,error:String(error.message||error),path:payload.path||null});}
   }
   if(req.method === 'PUT' && req.url === '/api/qpro/workspace'){

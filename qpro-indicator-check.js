@@ -11,6 +11,10 @@ const maxBytes = 2 * 1024 * 1024;
 const requested = process.argv.slice(2).find(arg => !arg.startsWith('--'));
 const jsonOutput = process.argv.includes('--json');
 const live = process.argv.includes('--live');
+const barsFlag = process.argv.indexOf('--bars');
+const warmupFlag = process.argv.indexOf('--warmup');
+const bars = barsFlag >= 0 ? Number(process.argv[barsFlag + 1]) : null;
+const warmup = warmupFlag >= 0 ? Number(process.argv[warmupFlag + 1]) : 0;
 const baseUrl = String(process.env.QPRO_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 
 function result(valid, error, details = {}) { return { valid, ...(error ? {error} : {}), ...details }; }
@@ -36,10 +40,13 @@ function localCheck(rel) {
   return issues.length ? result(false, issues.join('; '), {path: rel, size: stat.size}) : result(true, null, {path: rel, size: stat.size});
 }
 async function liveCheck(rel) {
-  const response = await fetch(`${baseUrl}/api/qpro/indicator-validate`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:rel})});
+  const request={path:rel};
+  if(Number.isFinite(bars) && bars>0) request.bars=Math.floor(bars);
+  if(Number.isFinite(warmup) && warmup>0) request.warmup=Math.floor(warmup);
+  const response = await fetch(`${baseUrl}/api/qpro/indicator-validate`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.ok) return result(false, body.error || `live validation HTTP ${response.status}`, {path:rel, validation:body.validation || null});
-  return result(true, null, {path:rel, validation:body.validation || null, hash:body.hash || null});
+  return result(true, null, {path:rel, validation:body.validation || null, window:body.window || null, hash:body.hash || null});
 }
 async function main() {
   if (!requested) { print(result(false, 'usage: node qpro-indicator-check.js indicators/<name>.js [--live] [--json]')); process.exitCode=1; return; }
