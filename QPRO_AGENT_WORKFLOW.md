@@ -39,3 +39,13 @@ node qpro-indicator-check.js indicators/<name>.js --live --bars N --warmup M --j
 6. Stop before Apply. Only the user can explicitly Apply through the browser.
 
 Live validation checks runtime execution and returned line/marker/band/level/bar-color structures. It does not replace visual review, and it never applies a file.
+
+## Chart drawings
+
+Drawing actions are supported through the `qpro_platform` tool. For a drawing request, first read the relevant chart state/data when anchors are not supplied, then create the drawing and verify the returned state. Use chart coordinates, never screen pixels:
+
+```json
+{"operation":"create_drawing","params":{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}],"style":{"color":"#2962ff"}}}
+```
+
+Common types include `trendline`, `ray`, `extended`, `arrow`, `horizontal`, `vertical`, `rectangle`, `fib`, `text`, and `path`. Preserve existing drawings; do not clear or delete them unless explicitly requested. Ask when a symbol, timeframe, anchor candles, price levels, or drawing type is ambiguous. A direct user request authorizes the requested drawing action, but the agent must report what it created and its anchors.
