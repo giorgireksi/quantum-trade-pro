@@ -1,6 +1,6 @@
 # Quantum Trade Pro workspace
 
-Use native coding-agent behavior. The browser is the chart authority; this repository is the QPRO application and its isolated indicator workspace.
+Use native coding-agent behavior. The browser is the chart authority; this repository is the QPRO application and its isolated indicator workspace. For the shared request/range semantics used by other LLM CLIs, read `QPRO_AGENT_WORKFLOW.md`.
 
 ## Indicator work
 
