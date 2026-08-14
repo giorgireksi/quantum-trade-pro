@@ -363,9 +363,9 @@ async function createSession(input){
     noSkills:false,
     noPromptTemplates:false,
     noContextFiles:false,
-    // Preserve Pi CLI's native system prompt; QPRO adds only its workspace
-    // and explicit indicator validation boundary.
-    appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\nYou are operating inside the isolated QPRO workspace. Use native Pi behavior and tools normally. Indicator source files live under indicators/*.js and must follow the QPRO contract. Do not claim an indicator is applied until QPRO validation and explicit user Apply confirm it.']
+    // Preserve Pi CLI's native system prompt. QPRO-specific instructions are
+    // supplied only by the active browser task and the workspace AGENTS.md.
+    appendSystemPromptOverride:(base)=>payload.systemPrompt ? [...base, String(payload.systemPrompt)] : base
   });
   await loader.reload();
   const state=readResourceState();
