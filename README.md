@@ -36,7 +36,6 @@ Open the AI Assistant and select ⚙ Pi settings:
 - Choose a native Pi CLI model and thinking level.
 - Native Pi owns providers, authentication, skills, extensions, prompts, and model discovery through `~/.pi/agent/`.
 - QPRO adds only minimal task-scoped platform context and the lazy semantic platform gateway; Pi remains native by default.
-- "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in
 - The Model field has a searchable model picker. NVIDIA NIM's **↻ Models** button loads the live catalog securely through the local backend; if unavailable, a curated NVIDIA fallback list remains available.
 - Multiple open tabs stay synchronized live with `BroadcastChannel`. Durable QPRO workspace state is server-owned and written atomically to `.qpro/workspace-state.json` through `/api/qpro/workspace`; clearing browser cache/storage does not remove settings, indicators, drawings, alerts, AI history/context, symbol/timeframe, or imported-symbol data. Legacy localStorage/IndexedDB data is read only once for migration.
