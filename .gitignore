@@ -2,6 +2,11 @@ node_modules/
 dist/
 shots/
 BTC_data/
+BTCUSDT_daily_3y.csv
+
+# local agent/runtime artifacts
+.pi-subagents/
+.vite/
 
 # launcher runtime
 .qpro.pid

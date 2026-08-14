@@ -20,7 +20,22 @@ const sessionRoot = path.join(appData, 'pi-sessions');
 const tempRoot = path.join(os.tmpdir(), 'quantum-trade-pro-pi-models');
 for (const dir of [workspaceRoot, agentRoot, sessionRoot, tempRoot]) fs.mkdirSync(dir, {recursive:true});
 const sessions = new Map();
+const sessionPromises = new Map();
+let modelRuntimePromise = null;
+function sharedModelRuntime(){
+  if(!modelRuntimePromise) modelRuntimePromise=pi.ModelRuntime.create().catch(error=>{modelRuntimePromise=null;throw error;});
+  return modelRuntimePromise;
+}
 const activeChats = new Map();
+const streamLocks = new Set();
+const modelChangeLocks = new Map();
+async function withModelChangeLock(chatId, fn){
+  const key=String(chatId || 'default');
+  const previous=modelChangeLocks.get(key) || Promise.resolve();
+  const current=previous.catch(()=>{}).then(fn);
+  modelChangeLocks.set(key,current);
+  try{return await current;}finally{if(modelChangeLocks.get(key)===current)modelChangeLocks.delete(key);}
+}
 const resourceStateFile = path.join(appData,'pi-resource-state.json');
 function readResourceState(){ try{return JSON.parse(fs.readFileSync(resourceStateFile,'utf8'));}catch(_){return {disabled:{}};} }
 function resourceKey(kind,name){ const value=String(name || ''); return kind==='extension' && /qpro-tools(?:\.ts)?$/i.test(value) ? 'qpro-tools' : value; }
@@ -69,14 +84,36 @@ function protocolFor(baseUrl, requested){
 function apiFor(protocol){
   return protocol === 'anthropic' ? 'anthropic-messages' : protocol === 'gemini' ? 'google-generative-ai' : protocol === 'responses' ? 'openai-responses' : 'openai-completions';
 }
+function modelSelection(payload={}){
+  const requested=String(payload.piModel || '').trim();
+  const explicit=payload.modelSelection==='explicit' || payload.piModelExplicit===true || (payload.modelSelection===undefined && requested.length>0);
+  if(explicit && !requested) throw new Error('Explicit model selection is empty');
+  return {mode:explicit?'explicit':'native-default',requested:explicit?requested:''};
+}
+function modelLabel(model){return model ? String(model.provider||'')+'/'+String(model.id||'') : '';}
+function thinkingSelection(payload={}){
+  const requested=String(payload.piThinking || '').trim();
+  const explicit=payload.thinkingSelection==='explicit' || payload.piThinkingExplicit===true || (payload.thinkingSelection===undefined && requested.length>0);
+  if(explicit && !requested) throw new Error('Explicit thinking selection is empty');
+  return {mode:explicit?'explicit':'native-default',requested:explicit?requested:''};
+}
+function nativeThinkingLevel(){return String(nativePiSettings().defaultThinkingLevel || 'medium');}
 function sessionKey(payload){
-  const settings=nativePiSettings();
-  const modelKey=payload.piModel || ((settings.defaultProvider || '') + '/' + (settings.defaultModel || ''));
-  // One browser conversation maps to one native Pi session. Model changes must
-  // call setModel on that session, not silently select another recent session.
-  return crypto.createHash('sha256').update(String(payload.chatId || 'default')).digest('hex').slice(0,24);
+  // One browser conversation maps to one native Pi session. Model switching is
+  // explicit and applied with setModel(); do not create a second recent-session
+  // lane or let a stale session file silently select a provider.
+  const lane=payload.indicatorFastLane === true
+    ? ':indicator-fast:'+String(payload.indicatorRequestId || 'default')
+    : ':general';
+  return crypto.createHash('sha256').update(String(payload.chatId || 'default')+lane).digest('hex').slice(0,24);
 }
 function safeChatDir(payload){ return path.join(sessionRoot, sessionKey(payload)); }
+function safeSessionFile(file){
+  const resolved=path.resolve(String(file || ''));
+  const root=path.resolve(sessionRoot)+path.sep;
+  if(!resolved.startsWith(root) || !/\.jsonl$/i.test(resolved)) throw new Error('Session path outside QPRO sessions');
+  return resolved;
+}
 function nativePiSettings(){
   try{return JSON.parse(fs.readFileSync(path.join(agentRoot,'settings.json'),'utf8'));}catch(_){return {};}
 }
@@ -96,14 +133,14 @@ function resolveNativeModel(runtime, requested){
   throw new Error('Pi CLI has no authenticated models. Configure a provider with `pi /login` or in ~/.pi/agent/auth.json.');
 }
 async function nativePiModels(){
-  const runtime=await pi.ModelRuntime.create();
+  const runtime=await sharedModelRuntime();
   return (await runtime.getAvailable()).map(m=>({provider:m.provider,id:m.id,name:m.name,reasoning:!!m.reasoning,input:m.input}));
 }
 const QPRO_ARCHITECTURE = `# QPRO architecture for indicator work
 
 Quantum Trade Pro is a single-file browser trading platform served by server.js.
 The browser owns chart state and rendering; Pi owns coding assistance. The
-browser sends symbol, timeframe, selected indicator notes/code, and chat to
+browser sends symbol, timeframe, selected indicator file references/notes, and chat to
 /api/pi/stream. The Node backend creates a native Pi SDK AgentSession and
 streams response, tool activity, compaction, retry, and lifecycle events. The
 /api/pi/control endpoint handles stop, steer, follow-up, and compaction.
@@ -111,21 +148,21 @@ streams response, tool activity, compaction, retry, and lifecycle events. The
 Indicator lifecycle:
 1. Pi reads AGENTS.md and INDICATOR_CONTRACT.md.
 2. Pi creates or edits indicators/*.js in this workspace using normal coding tools.
-3. The browser receives changed indicator files and sends them through the QPRO review/import boundary.
+3. The browser receives changed indicator files and exposes them through the Indicator Files panel. Saved files are the only import source and pass through the QPRO validation/Apply boundary.
 4. The browser validates with buildIndicatorRuntime(), performs a dry run against
-   chartData, and only then offers Import or updates an existing indicator.
+   chartData, and only then offers explicit Apply or updates an existing registration.
 5. executeCustomIndicator() renders lines, panes, bands, levels, markers, and
    bar colors. State.customIndicators and workspace persistence retain the result.
 
 Important browser functions:
-- buildIndicatorRuntime / validateImportedCode: syntax and contract validation
+- buildIndicatorRuntime / validatePiIndicatorCode: syntax and contract validation
 - executeCustomIndicator: calculation and Lightweight Charts rendering
-- aiImportMessage: validated import/update boundary
+- Indicator Files panel: saved-file validation and explicit Apply boundary
 - State.customIndicators: saved custom indicator definitions
 - buildMathTA: available technical-analysis helpers
 - buildPiSystemPrompt: optional user instructions sent to Pi
 
-Before consequential actions, use qpro_request_approval and wait for the user's decision. Use qpro_ask_user when an implementation choice is genuinely ambiguous. Do not bypass the browser validator or claim that a file is applied until the user imports it or the platform explicitly confirms the update.
+Execute normal workspace and platform actions directly in the isolated QPRO environment. Do not pause for interactive approval. Do not bypass the browser validator or claim that a file is applied until the user explicitly applies it or the platform confirms the update.
 `;
 function writeChartContext(payload){
   const file=path.join(workspaceRoot,'QPRO_CHART_CONTEXT.md');
@@ -140,37 +177,101 @@ function latestPayloadText(payload){
   const latest=[...(payload?.messages || [])].reverse().find(m=>m && m.role==='user');
   return textBlock(latest?.content).trim();
 }
+function containsPineSource(value){
+  const text=String(value || '').trim();
+  return /\/\/\s*@version\s*=|\b(?:indicator|strategy|study|plot|plotshape|plotchar|barcolor|hline|bgcolor)\s*\(|\b(?:ta|math|input)\.[A-Za-z_]\w*\s*\(|\b(?:open|high|low|close|volume)\s*=>/i.test(text)
+    && !/^(?:please|can you|could you|what|how|why)\b/i.test(text);
+}
+function shouldUseDirectPineLane(payload={}){
+  const latest=latestPayloadText(payload);
+  const users=(payload.messages || []).filter(m=>m?.role==='user');
+  const hasSource=containsPineSource(latest);
+  const asksTranslate=/\b(?:translate|translation|convert|port|rewrite)\b[\s\S]{0,300}\b(?:pine|tradingview|pinescript|pine\s*script)\b|\b(?:pine|tradingview|pinescript|pine\s*script)\b[\s\S]{0,300}\b(?:translate|translation|convert|port|rewrite)\b/i.test(latest);
+  const followUp=/\b(?:translate|convert|port|rewrite)\b/i.test(latest) && users.some(m=>m!==users.at(-1) && containsPineSource(m.content));
+  return hasSource || asksTranslate || followUp;
+}
+function normalizePiPayload(input={}){
+  const payload={...input};
+  // The browser sends the selected model and selection mode explicitly.
+  // Never inherit a stale chat model or provider fallback silently.
+  if(!Object.prototype.hasOwnProperty.call(payload,'piModel')) payload.piModel='';
+  if(!Object.prototype.hasOwnProperty.call(payload,'modelSelection')) payload.modelSelection=String(payload.piModel||'').trim()?'explicit':'native-default';
+  if(shouldUseDirectPineLane(payload)){
+    // Pine translation is file-first: Pi must save the translated indicator in
+    // indicators/*.js so the browser can validate and apply that file.
+    payload.indicatorFastLane=false;
+    payload.indicatorOutputOnly=false;
+    payload.indicatorTask=true;
+    payload.workspaceIndicatorEdit=true;
+    payload.indicatorFileOnly=true;
+    payload.intentText='create an indicator file from the supplied Pine source';
+    payload.needsPlatformContext=false;
+    payload.workspaceContext='';
+  }
+  return payload;
+}
+function capabilityProfile(payload={}, text=''){
+  const value=String(payload.intentText || text || '').trim().toLowerCase();
+  const explicitIndicator=payload.indicatorTask === true;
+  const fastIndicator=payload.indicatorFastLane === true;
+  const indicatorEditIntent=explicitIndicator && (payload.workspaceIndicatorEdit===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:create|implement|modify|edit|fix|debug|refactor|change|update|save|write|add|remove|delete|rewrite|repair)\b/i.test(value)));
+  const indicatorDiagnosticIntent=explicitIndicator && (payload.workspaceIndicatorDiagnostic===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:error|bug|broken|invalid|fail(?:s|ed|ure)?|issue|problem|wrong|diagnos)/i.test(value)));
+  const translationIntent=/\b(?:translate|translation|convert)\b[\s\S]{0,100}\b(?:pine|tradingview|pinescript|pine\s*script)\b|\b(?:pine|tradingview|pinescript|pine\s*script)\b[\s\S]{0,100}\b(?:translate|translation|convert)\b/i.test(value);
+  if(fastIndicator) return {mode:'output-only',fastIndicator,explicitIndicator,translationIntent:true};
+  const selected=payload.selectedIndicatorContext === true;
+  // Pine translation is a deterministic no-tool lane. Never let a
+  // translation request drift into chart probing, web research, or workspace
+  // inspection. If source code is missing, the model should simply ask for it.
+  if(translationIntent && !payload.needsPlatformContext && !payload.indicatorFileOnly) return {mode:'output-only',fastIndicator:false,explicitIndicator:true,translationIntent};
+  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|layout|quote|price|market data|price data|indicator on (the )?chart|turn on|turn off|toggle|enable|disable|set .*timeframe)\b/i.test(value);
+  const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(value);
+  const sourceIntent=/\b(source|sources|citation|citations|verify|fact[- ]check|claim)\b/i.test(value);
+  const fetchIntent=/\b(url|website|youtube|video|github|repository)\b/i.test(value);
+  const analysisIntent=/\b(explain|compare|contrast|analy[sz]e|review|describe|summari[sz]e|understand|difference|how does)\b/i.test(value);
+  const outputIntent=/\b(return|show|give|generate|write|rewrite|fix|combine|merge|compose|convert|translate|improve|optimi[sz]e|refactor|create|build)\b/i.test(value);
+  const fileIntent=/\b(file|workspace|folder|directory|save|write to|create .*\.js|under indicators|inspect files?|read files?|codebase|repository|repo)\b/i.test(value);
+  const shellIntent=/\b(run|execute)\b[^\n]{0,30}\b(command|shell|terminal|bash|npm|node|script)\b|\b(shell|terminal|bash|npm|node)\b/i.test(value);
+  const writeIntent=/\b(create|implement|modify|edit|fix|debug|refactor|write|build|change|update|save|remove|delete)\b/i.test(value);
+  const validationIntent=/\b(validate|validation|test|dry[- ]?run|check the code|import|apply)\b/i.test(value);
+  const workspaceRead=/\b(workspace|codebase|repository|repo|project files?|inspect files?|read files?)\b/i.test(value);
+  const complex=/\b(subagent|sub-agent|delegate|parallel|team|multi[- ]step|complex)\b/i.test(value);
+  // Inline selected code and image input need no tools. A request to explain,
+  // compare, or return revised code stays a normal model turn unless the user
+  // explicitly asks Pi to inspect/save files or operate the chart.
+  const inlineOnly=(selected || analysisIntent || (explicitIndicator && outputIntent && !fileIntent)) && !indicatorEditIntent && !indicatorDiagnosticIntent && !platformIntent && !researchIntent && !shellIntent && !validationIntent && !fileIntent;
+  if(inlineOnly) return {mode:'output-only',fastIndicator:false,explicitIndicator,selected,analysisIntent,outputIntent};
+  return {mode:'automatic',fastIndicator:false,explicitIndicator,selected,platformIntent,researchIntent,sourceIntent,fetchIntent,analysisIntent,outputIntent,fileIntent: fileIntent || indicatorEditIntent || indicatorDiagnosticIntent,shellIntent,writeIntent,validationIntent: validationIntent || indicatorDiagnosticIntent,workspaceRead,indicatorEditIntent,indicatorDiagnosticIntent,complex};
+}
 function configureSessionTools(session,payload={}){
   const text=latestPayloadText(payload).toLowerCase();
-  const explicitIndicator=payload.indicatorTask === true;
-  const indicatorContract=explicitIndicator ? ' Read INDICATOR_CONTRACT.md before implementing an indicator, validate it, and save it under indicators/.' : '';
-  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|layout|quote|price|market data|price data|indicator on (the )?chart|turn on|turn off|toggle|enable|disable|set .*timeframe)\b/i.test(text);
-  const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(text);
-  const sourceIntent=/\b(source|sources|citation|citations|verify|fact[- ]check|claim)\b/i.test(text);
-  const fetchIntent=/\b(url|website|youtube|video|github|repository)\b/i.test(text);
-  const codingAction=explicitIndicator || /\b(create|implement|modify|edit|fix|debug|refactor|write|build|code|javascript|typescript|pine ?script|file)\b/i.test(text);
-  const workspaceRead=/\b(workspace|codebase|repository|repo|project files?|inspect files?|read files?)\b/i.test(text);
-  const complex=/\b(subagent|sub-agent|delegate|parallel|team|multi[- ]step|complex)\b/i.test(text);
+  const profile=capabilityProfile(payload,text);
+  if(profile.mode==='output-only'){
+    session.setActiveToolsByName([]);
+    return {tools:[],profile,indicatorContract:profile.fastIndicator ? ' Return only the translated indicator JavaScript.' : ''};
+  }
   const available=new Set(session.getAllTools().map(tool=>tool.name));
   const names=new Set();
   const add=(...items)=>items.forEach(name=>{if(available.has(name)) names.add(name);});
-  if(codingAction || workspaceRead) add('read','grep','find','ls');
-  if(codingAction) add('edit','write','bash');
-  if(platformIntent) add('qpro_platform','qpro_ask_user');
-  if(explicitIndicator) add('qpro_indicator_list','qpro_indicator_validate','qpro_indicator_import');
-  if(researchIntent){
-    if(fetchIntent) add('fetch_content','get_search_content');
-    else if(sourceIntent) add('source_check','get_search_content');
+  if(profile.platformIntent) add('qpro_platform');
+  if(profile.researchIntent){
+    if(profile.fetchIntent) add('fetch_content','get_search_content');
+    else if(profile.sourceIntent) add('source_check','get_search_content');
     else add('web_search');
   }
-  if(complex) add('subagent');
-  // Keep ordinary conversation tool-free. This is intentional: tool schemas are
-  // part of every model request and are unnecessary for greetings/explanations.
+  if(profile.workspaceRead || profile.writeIntent || profile.fileIntent || profile.explicitIndicator) add('read','grep','find','ls');
+  if(profile.writeIntent && (profile.fileIntent || profile.explicitIndicator) || profile.indicatorEditIntent) add('edit','write');
+  if(profile.shellIntent) add('bash');
+  if((profile.validationIntent && profile.explicitIndicator) || profile.indicatorEditIntent || payload.indicatorFileOnly) add('qpro_indicator_validate','qpro_indicator_import');
+  if(profile.explicitIndicator && (profile.writeIntent || profile.fileIntent)) add('qpro_update_plan','qpro_checkpoint');
+  if(profile.complex) add('subagent');
+  // Tools are a per-turn capability ceiling. Unrelated conversation and
+  // inline indicator work expose zero schemas; only explicit needs add tools.
   session.setActiveToolsByName([...names]);
-  return {tools:[...names],profile:{codingAction,platformIntent,researchIntent,sourceIntent,fetchIntent,explicitIndicator,complex},indicatorContract};
+  return {tools:[...names],profile,indicatorContract:profile.explicitIndicator ? ' Use the smallest required QPRO capability. For existing indicator fixes, edit the relevant file in place and preserve unrelated code.' : ''};
 }
-function ensureWorkspace(){
+function ensureWorkspace(options={}){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
+  if(options.minimal === true) return;
   const extensionDir = path.join(workspaceRoot,'.pi','extensions');
   fs.mkdirSync(extensionDir,{recursive:true});
   const extensionSource = path.join(appRoot,'qpro-pi-extension.ts');
@@ -186,16 +287,19 @@ function ensureWorkspace(){
     '- Use the smallest necessary QPRO platform capability only when needed or explicitly requested.',
     '- Work primarily inside this workspace and its indicators/ directory.',
     '- Do not modify the QPRO application HTML or backend unless the user explicitly asks for platform engineering.',
-    '- For indicator changes, write complete JavaScript files under indicators/.',
+    '- For indicator changes, edit the existing relevant indicators/*.js file in place when it exists; do not regenerate a replacement unless the user explicitly asks for a rewrite or new version.',
+    '- Before editing an existing indicator, read only that file, preserve unrelated code, and describe the intended fix.',
+    '- After editing, validate the file and report the complete final path; the user may copy the saved file directly.',
     '- Explain changes briefly and mention files changed.', '',
     '## Indicator workflow',
     '1. Read INDICATOR_CONTRACT.md before creating or changing an indicator.',
     '2. Answer general questions and greetings normally; inspect or change the platform only when useful.',
-    '3. Inspect related indicator files and use the coding tools normally.',
-    '4. Validate the code against the platform contract before recommending import.',
-    '5. Before consequential platform or file actions, use qpro_request_approval and wait for the user decision.',
-    '6. Use qpro_ask_user when a meaningful design choice is ambiguous.',
-    '7. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
+    '3. If the requested indicator file exists, edit it in place; only create a new file when no target exists or the user asks for a new version.',
+    '4. Inspect related indicator files and use the coding tools normally.',
+    '5. Validate the code against the platform contract before recommending import.',
+    '6. Execute normal workspace and platform actions directly; do not stop for interactive approval.',
+    '7. Ask a concise question only when required information is genuinely missing; otherwise choose sensible defaults.',
+    '8. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
   ].join('\\n'));
   const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
   if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
@@ -225,44 +329,132 @@ function promptWithHistory(messages, maxChars=24000){
   return (omitted ? `[Earlier conversation omitted for context efficiency: ${omitted} message(s)]\n\n` : '')+selected.join('\n\n');
 }
 function workspaceFiles(options={}){
-  ensureWorkspace(); const out=[]; const includeContent=options.includeContent !== false; const maxContent=Number(options.maxContent || 120000);
-  const walk=(dir)=>{ for(const ent of fs.readdirSync(dir,{withFileTypes:true})){ const p=path.join(dir,ent.name); if(ent.isDirectory()) walk(p); else if(/\.(js|md|json|txt)$/i.test(ent.name)){ const rel=path.relative(workspaceRoot,p); const stat=fs.statSync(p); const item={path:rel,size:stat.size,mtime:stat.mtimeMs}; if(includeContent && stat.size<=maxContent) item.content=fs.readFileSync(p,'utf8'); out.push(item); } } };
+  const out=[]; const includeContent=options.includeContent !== false; const maxContent=Number(options.maxContent || 512000);
+  const walk=(dir)=>{ for(const ent of fs.readdirSync(dir,{withFileTypes:true})){ const p=path.join(dir,ent.name); if(ent.isDirectory()) walk(p); else if(/\.(js|md|json|txt)$/i.test(ent.name)){
+    const rel=path.relative(workspaceRoot,p); const stat=fs.statSync(p); const raw=fs.readFileSync(p); const item={path:rel,size:stat.size,mtime:stat.mtimeMs,hash:crypto.createHash('sha256').update(raw).digest('hex')};
+    if(includeContent && stat.size<=maxContent) item.content=raw.toString('utf8'); else if(includeContent) item.contentTruncated=true;
+    out.push(item);
+  } } };
   walk(workspaceRoot); return out;
 }
-function changedWorkspaceFiles(before){
-  const current=workspaceFiles({includeContent:true}); const map=new Map((before || []).map(f=>[f.path,Number(f.mtime||0)]));
-  return current.filter(f=>!map.has(f.path)||Number(f.mtime||0)>map.get(f.path)+1);
+function lineDiff(beforeText,afterText,limit=24000){
+  const before=String(beforeText ?? '').replace(/\r\n/g,'\n').split('\n');
+  const after=String(afterText ?? '').replace(/\r\n/g,'\n').split('\n');
+  if(before.length*after.length>4000000) return {diff:'[diff omitted: file is too large for an inline line diff]',addedLines:null,removedLines:null,truncated:true};
+  const table=Array.from({length:before.length+1},()=>new Uint32Array(after.length+1));
+  for(let i=before.length-1;i>=0;i--) for(let j=after.length-1;j>=0;j--) table[i][j]=before[i]===after[j]?table[i+1][j+1]+1:Math.max(table[i+1][j],table[i][j+1]);
+  const ops=[]; let i=0,j=0;
+  while(i<before.length || j<after.length){
+    if(i<before.length && j<after.length && before[i]===after[j]){ops.push({type:' ',text:before[i]});i++;j++;}
+    else if(j<after.length && (i>=before.length || table[i][j+1]>=table[i+1][j])){ops.push({type:'+',text:after[j++]});}
+    else ops.push({type:'-',text:before[i++]});
+  }
+  const changed=ops.map((x,n)=>x.type===' '?-1:n).filter(n=>n>=0); const keep=new Set();
+  changed.forEach(n=>{for(let k=Math.max(0,n-3);k<=Math.min(ops.length-1,n+3);k++)keep.add(k);});
+  const selected=ops.map((x,n)=>({x,n})).filter(({n})=>keep.has(n));
+  let addedLines=0,removedLines=0; ops.forEach(x=>{if(x.type==='+')addedLines++;if(x.type==='-')removedLines++;});
+  let text=''; let previous=-2;
+  selected.forEach(({x,n})=>{if(n!==previous+1) text+=(text?'\n':'')+'@@ context @@\n'; text+=x.type+x.text+'\n'; previous=n;});
+  if(text.length>limit) return {diff:text.slice(0,limit)+'\n[… diff truncated …]',addedLines,removedLines,truncated:true};
+  return {diff:text.trimEnd(),addedLines,removedLines,truncated:false};
 }
-async function createSession(payload){
-  ensureWorkspace();
-  writeChartContext(payload);
-  const runtime=await pi.ModelRuntime.create();
-  const model=resolveNativeModel(runtime,payload.piModel);
-  const protocol=model.api;
+function changedWorkspaceFiles(before){
+  const current=workspaceFiles({includeContent:true,maxContent:512000});
+  const oldMap=new Map((before || []).map(f=>[f.path,f])); const newMap=new Map(current.map(f=>[f.path,f]));
+  const paths=[...new Set([...oldMap.keys(),...newMap.keys()])].sort(); const changes=[];
+  for(const file of paths){
+    const oldFile=oldMap.get(file), newFile=newMap.get(file); if(oldFile?.hash===newFile?.hash) continue;
+    const status=!oldFile?'added':!newFile?'removed':'modified';
+    const oldContent=oldFile?.contentTruncated?'':(oldFile?.content ?? ''); const newContent=newFile?.contentTruncated?'':(newFile?.content ?? '');
+    const d=lineDiff(oldContent,newContent);
+    changes.push({path:file,status,beforeHash:oldFile?.hash||null,afterHash:newFile?.hash||null,beforeSize:oldFile?.size||0,afterSize:newFile?.size||0,content:newFile?.content,previousContent:status==='removed'?oldFile?.content:undefined,diff:d.diff,addedLines:d.addedLines,removedLines:d.removedLines,diffTruncated:d.truncated,contentTruncated:!!(newFile?.contentTruncated||oldFile?.contentTruncated)});
+  }
+  return changes;
+}
+async function createSession(input){
+  const payload=normalizePiPayload(input || {});
+  const fastIndicator=payload.indicatorFastLane === true;
+  const requestProfile=capabilityProfile(payload,latestPayloadText(payload));
+  // Only the explicit Pine fast lane is isolated. Every normal session keeps
+  // Pi's complete native resource/tool catalog so later turns can naturally
+  // switch from conversation to coding, shell, research, or QPRO actions.
+  const leanConversation=false;
+  ensureWorkspace({minimal:fastIndicator});
+  if(!fastIndicator) writeChartContext(payload);
+  const runtime=await sharedModelRuntime();
+  const requestedModel=String(payload.piModel || '').trim();
+  // Leave model/thinking undefined when the caller did not explicitly choose
+  // them so native Pi can restore the values recorded in a resumed session.
+  const model=requestedModel ? resolveNativeModel(runtime,requestedModel) : undefined;
+  const protocol=model?.api;
   const settingsManager=pi.SettingsManager.create(workspaceRoot,agentRoot);
   const loader=new pi.DefaultResourceLoader({
     cwd:workspaceRoot,
     agentDir:agentRoot,
     settingsManager,
+    noExtensions:fastIndicator,
+    noSkills:fastIndicator,
+    noPromptTemplates:fastIndicator,
+    noContextFiles:fastIndicator,
     // Preserve Pi CLI's native system prompt; QPRO is an appended project
     // instruction layer, not a replacement for Pi's tool/compaction prompt.
-    appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\nYou are operating inside the QPRO indicator workspace. Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md when relevant. Use your Pi coding tools normally. Do not claim a chart change is applied until the platform validator/import boundary confirms it.']
+    appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\n'+(fastIndicator
+      ? 'You are in direct translation mode. SOURCE: TradingView Pine Script v5. TARGET: QPRO indicator JavaScript ES2020. Generate code only; do not test, validate, explain, use tools, or write files. Return one JavaScript code block. Use `const SETTINGS = [...]` only when inputs are needed (it must be an array). Define `function calculate(data, settings, MathTA)`. It must return `{lines, markers, bands, levels, barColors}`. Each line must use `{name, data:[{time, value}], color?, width?, pane?, type?}`; never use label/values/times. For plot(close), use `MathTA.series(data, "close")`. Use only data, settings, MathTA, Math, and plain arrays/objects. Preserve bar times and Pine plot/marker/band/level behavior. Omit unsupported Pine features with a comment. Return ONLY the code block.'
+      : 'You are operating inside the QPRO indicator workspace. QPRO custom indicators use JavaScript ES2020 in indicators/*.js, not Pine, Python, or TypeScript. They may define SETTINGS and must define calculate(data, settings, MathTA), consuming OHLCV bars shaped {time, open, high, low, close, volume} and returning {lines, markers, bands, levels, barColors}; line data uses {time, value}. Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md when relevant. Use your Pi coding tools normally. Do not claim a chart change is applied until the platform validator/import boundary confirms it.')]
   });
   await loader.reload();
   const state=readResourceState();
   if(Array.isArray(loader.skills)) loader.skills=loader.skills.filter(x=>resourceIsEnabled('skill',x.name));
   if(Array.isArray(loader.prompts)) loader.prompts=loader.prompts.filter(x=>resourceIsEnabled('prompt',x.name));
   const sessionDir=safeChatDir(payload);
+  fs.mkdirSync(sessionDir,{recursive:true});
   let sessionManager;
-  if(payload.sessionFile) sessionManager=pi.SessionManager.open(payload.sessionFile,sessionDir,workspaceRoot);
+  if(payload.sessionFile) sessionManager=pi.SessionManager.open(safeSessionFile(payload.sessionFile),sessionDir,workspaceRoot);
   else if(payload.forceNew) sessionManager=pi.SessionManager.create(workspaceRoot,sessionDir);
   else sessionManager=pi.SessionManager.continueRecent(workspaceRoot,sessionDir);
-  const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:payload.piThinking || nativePiSettings().defaultThinkingLevel || 'medium'});
+  const thinking=thinkingSelection(payload);
+  const requestedThinking=thinking.mode==='explicit' ? thinking.requested : nativeThinkingLevel();
+  const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:requestedThinking,tools:fastIndicator ? [] : undefined});
+  const activeModel=session.model || model;
+  if(!activeModel) throw new Error('Pi CLI has no active model. Configure a provider with `pi /login` or in ~/.pi/agent/auth.json.');
+  if(model && (activeModel.provider!==model.provider || activeModel.id!==model.id)){
+    try{await session.setModel(model);}catch(error){throw new Error('Pi model mismatch before request: requested '+modelLabel(model)+' but session selected '+modelLabel(activeModel)+': '+error.message);}
+  }
+  const effectiveModel=session.model || model || activeModel;
+  if(model && (effectiveModel.provider!==model.provider || effectiveModel.id!==model.id)) throw new Error('Pi model mismatch before request: requested '+modelLabel(model)+' but session selected '+modelLabel(effectiveModel));
+  const activeProtocol=effectiveModel.api;
   configureSessionTools(session,payload);
   const commands=(extensionsResult.runtime.getCommands ? extensionsResult.runtime.getCommands() : []).map(command => ({name:command.name,description:command.description || '',source:command.source || 'extension',sourceInfo:command.sourceInfo ? {path:command.sourceInfo.path,scope:command.sourceInfo.scope,origin:command.sourceInfo.origin} : undefined}));
-  return {session,runtime,model,protocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0,telemetry:{startedAt:Date.now(),compactions:[],retries:[],subagents:new Map()}};
+  return {session,runtime,model:effectiveModel,protocol:activeProtocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0,telemetry:{startedAt:Date.now(),compactions:[],retries:[],subagents:new Map()}};
 }
 async function nativePiCommands(payload={}){ const entry=await sessionForPayload(payload); return entry.commands || []; }
+async function applyRequestedModel(entry,payload={}){
+  const selection=modelSelection(payload);
+  return withModelChangeLock(payload.chatId,async()=>{
+    const model=resolveNativeModel(entry.runtime,selection.requested);
+    const current=entry.session.model;
+    if(!current || current.provider!==model.provider || current.id!==model.id){
+      await entry.session.setModel(model);
+      entry.model=model; entry.protocol=model.api;
+    }
+    return model;
+  });
+}
+async function applyRequestedThinking(entry,payload={}){
+  const selection=thinkingSelection(payload);
+  const level=selection.mode==='explicit' ? selection.requested : nativeThinkingLevel();
+  if(String(entry.session.thinkingLevel || '')!==level) entry.session.setThinkingLevel(level);
+  return level;
+}
+function requestedModelInfo(payload,entry){
+  const selection=modelSelection(payload);
+  const effective=entry?.session?.model || entry?.model;
+  const thinking=thinkingSelection(payload);
+  return {selectionMode:selection.mode,requestedModel:selection.requested || null,effectiveModel:modelLabel(effective)||null,nativeDefaultModel:selection.mode==='native-default'?modelLabel(effective)||null:null,thinkingSelection:thinking.mode,requestedThinking:thinking.requested || null,effectiveThinking:entry?.session?.thinkingLevel || null,nativeDefaultThinking:thinking.mode==='native-default'?nativeThinkingLevel():null};
+}
+function isPermanentProviderQuotaError(errorMessage){
+  return /(?:daily|monthly)\s+(?:free\s+)?limit|inference_cap_error|quota exceeded|insufficient quota/i.test(String(errorMessage || ''));
+}
 function sessionStats(entry){
   let stats={}; try{stats=entry.session.getSessionStats() || {};}catch(_){}
   let contextUsage=null; try{contextUsage=entry.session.getContextUsage() || null;}catch(_){}
@@ -316,19 +508,44 @@ async function nativePiSessions(){
   found.sort((a,b)=>b.modified.getTime()-a.modified.getTime());
   return found.map((item,index)=>({index,file:item.file || item.path,id:item.id,name:item.name || '',cwd:item.cwd,modified:item.modified?.toISOString?.() || String(item.modified || ''),messageCount:item.messageCount || item.messages?.length || 0,firstMessage:item.firstMessage || ''}));
 }
-function sessionForPayload(payload){
-  const id=sessionKey(payload); let entry=sessions.get(id);
-  return entry ? Promise.resolve(entry) : createSession(payload).then(created=>{sessions.set(id,created);return created;});
+function sessionForPayload(input){
+  const payload=normalizePiPayload(input || {});
+  const id=sessionKey(payload); const entry=sessions.get(id);
+  if(entry) return Promise.resolve(entry);
+  if(sessionPromises.has(id)) return sessionPromises.get(id);
+  const pending=createSession(payload).then(created=>{sessions.set(id,created);return created;}).finally(()=>sessionPromises.delete(id));
+  sessionPromises.set(id,pending);
+  return pending;
 }
 function makePrompt(entry,payload){
-  const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+String(payload.workspaceContext).slice(0,18000):'';
+  const profile=capabilityProfile(payload,latestPayloadText(payload));
+  const workspace=profile.platformIntent && payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+String(payload.workspaceContext):'';
   const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
   const latestText=textBlock(latest && latest.content).trim();
+  // Direct Pine translation is intentionally self-contained. Avoid replaying
+  // browser chat history or adding chart context; native session history still
+  // supplies prior turns when a correction retry is required.
+  if(payload.indicatorFastLane === true){
+    const pineSource=[...(payload.messages || [])].reverse().find(m=>m?.role==='user' && containsPineSource(m.content));
+    const sourceText=textBlock(pineSource?.content).trim();
+    const source=sourceText && sourceText!==latestText ? '\n\nPINE SOURCE TO TRANSLATE:\n'+sourceText : '';
+    return latestText+source+'\n\nThis is a direct Pine translation request. Return ONLY the complete JavaScript code block. Do not read workspace files, inspect chart state, use tools, ask for approval, or invent missing source.';
+  }
+  if(payload.indicatorFileOnly){
+    return latestText+'\n\nThis is a file-only indicator request. Translate or implement the indicator and write the complete result to indicators/<kebab-case-name>.js using the coding tools. Validate the saved file when possible. Return a concise summary and the exact saved path; do not paste the full source into the response and do not claim the chart was changed.';
+  }
+  if(profile.translationIntent && !payload.indicatorFileOnly) return latestText+'\n\nThis is a direct Pine translation request. Translate the Pine source already present in this turn or immediately preceding user turn. Do not read workspace files, inspect chart state, use tools, ask for approval, or invent missing source. If no Pine source is available, ask the user to paste or attach it.';
   // Preserve slash commands exactly. Pi's AgentSession expands extension
   // commands, prompt templates, and skills when prompt() receives raw /… text.
   if(/^\/\S+/.test(latestText)) return latestText;
-  const indicatorDirective=payload.indicatorTask ? '\n\nExplicit indicator task: read INDICATOR_CONTRACT.md, inspect only relevant indicator files, validate before proposing import, and never claim application until QPRO confirms it.' : '';
-  return (entry.initialized ? latestText : promptWithHistory(payload.messages)) + workspace + indicatorDirective;
+  const indicatorDirective=payload.indicatorTask ? '\n\nExplicit indicator task: read INDICATOR_CONTRACT.md only when needed, inspect only the relevant indicator file, edit an existing indicators/*.js file in place when present, preserve unrelated code, validate the saved result, and never claim application until QPRO confirms it. Indicator source is file-only: save complete JavaScript under indicators/<kebab-case-name>.js and refer to the path in your response; do not return a paste-only import artifact. Do not request interactive approval.' : '';
+  // Native Pi persists the conversation after the first turn. For a fresh
+  // plain question, the current turn is sufficient; all other workflows keep
+  // the normal full bounded history used by Pi/QPRO.
+  const prompt=entry.initialized || profile.mode==='output-only' || (!profile.platformIntent && !profile.researchIntent && !profile.fileIntent && !profile.writeIntent && !profile.explicitIndicator)
+    ? latestText
+    : promptWithHistory(payload.messages);
+  return prompt + workspace + indicatorDirective;
 }
 function summarizeToolValue(value){
   if(value == null) return null;
@@ -340,24 +557,42 @@ function summarizeToolValue(value){
   return value;
 }
 function summarizeAgentMessage(message){
-  return {stopReason:message.stopReason,usage:message.usage || null,content:(Array.isArray(message.content)?message.content:[]).map(item=>item.type==='text'?{type:'text',text:String(item.text || '').slice(0,6000)}:item.type==='thinking'?{type:'thinking',text:'[hidden]'}:item.type==='toolCall'?{type:'toolCall',name:item.name,id:item.id,arguments:summarizeToolValue(item.arguments)}:{type:item.type}).slice(0,30)};
+  return {stopReason:message.stopReason,usage:message.usage || null,content:(Array.isArray(message.content)?message.content:[]).map(item=>item.type==='text'?{type:'text',text:String(item.text || '').slice(0,6000)}:item.type==='thinking'?{type:'thinking',text:'[model thinking omitted from transcript]'}:item.type==='toolCall'?{type:'toolCall',name:item.name,id:item.id,arguments:summarizeToolValue(item.arguments)}:{type:item.type}).slice(0,30)};
 }
-function finalAssistantText(session, streamed){
-  // Tool loops can contain several assistant messages. Native Pi renders those
-  // as separate transcript entries; QPRO should return only the final answer,
-  // not concatenate pre-tool narration with the settled response.
-  for(let i=(session.messages || []).length-1;i>=0;i--){ const m=session.messages[i]; if(m && m.role==='assistant' && textBlock(m.content)) return textBlock(m.content); }
-  return streamed || '';
+function finalAssistantText(session, streamed, beforeCount=0){
+  // Select only assistant content created by this turn. Looking through the
+  // entire session can return an older answer when the provider ends a turn
+  // after tool calls or with an empty assistant segment.
+  for(let i=(session.messages || []).length-1;i>=beforeCount;i--){
+    const m=session.messages[i];
+    if(m && m.role==='assistant' && textBlock(m.content)) return textBlock(m.content);
+  }
+  return String(streamed || '');
 }
-async function streamPiAgent(payload, res){
+function latestStopReason(session, beforeCount=0){
+  for(let i=(session.messages || []).length-1;i>=beforeCount;i--){const m=session.messages[i];if(m?.role==='assistant' && m.stopReason)return String(m.stopReason);}
+  return '';
+}
+function latestAssistantError(session,beforeCount=0){
+  for(let i=(session.messages || []).length-1;i>=beforeCount;i--){const m=session.messages[i];if(m?.role==='assistant' && (m.errorMessage || m.stopReason==='error')) return {errorMessage:m.errorMessage || '',stopReason:m.stopReason || 'error'};}
+  return null;
+}
+async function streamPiAgent(input, res){
+  const payload=normalizePiPayload(input || {});
   const chatId=String(payload.chatId || 'default');
-  if(activeChats.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
-  const entry=await sessionForPayload(payload);
-  writeChartContext(payload);
+  if(activeChats.has(chatId) || streamLocks.has(chatId)) throw new Error('This Pi conversation is already running. Use Stop or follow-up.');
+  streamLocks.add(chatId);
+  let entry;
+  try { entry=await sessionForPayload(payload); }
+  catch(error){ streamLocks.delete(chatId); throw error; }
+  if(payload.indicatorFastLane !== true) writeChartContext(payload);
+  try{ await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); }
+  catch(error){ streamLocks.delete(chatId); throw error; }
   configureSessionTools(entry.session,payload);
-  const beforeWorkspaceFiles=workspaceFiles({includeContent:false});
-  const textParts=[]; const toolEvents=[]; const transcript=[]; let closed=false; let latestUsage=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null; let currentTranscript=null;
-  const send=(type,data={})=>{ if(closed || res.destroyed) return; res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
+  const beforeWorkspaceFiles=payload.indicatorFastLane === true ? null : workspaceFiles({includeContent:true,maxContent:512000});
+  const beforeMessageCount=entry.session.messages.length;
+  const textParts=[]; const toolEvents=[]; const transcript=[]; const thinkingSpans=[]; const lifecycle=[]; let closed=false; let latestUsage=null; let thinkingStartedAt=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null; let currentTranscript=null;
+  const send=(type,data={})=>{ if(closed || res.destroyed) return; if(['turn_start','message_start','message_end','agent_start','agent_end','agent_settled','turn_end','tool_start','tool_end','compaction_start','compaction_end','retry_start','retry_end','queue_update','activity'].includes(type)) lifecycle.push({type,timestamp:Date.now(),...(type==='tool_start'||type==='tool_end'?{tool:data.tool,toolCallId:data.toolCallId,error:!!data.error}:{}),...(type==='activity'?{message:String(data.message||'')}:{}),...(type==='retry_start'?{message:String(data.message||''),attempt:data.attempt,maxAttempts:data.maxAttempts}:{}),...(type==='compaction_start'||type==='compaction_end'?{message:String(data.message||'')}: {})}); res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
   const unsubscribe=entry.session.subscribe(event=>{
     if(event.type==='turn_start'){ turnIndex=event.turnIndex ?? (turnIndex+1); send('turn_start',{turnIndex,timestamp:event.timestamp || Date.now()}); }
     else if(event.type==='message_start'){ currentMessageId='m_'+(++messageIndex); currentTranscript=event.message?.role==='assistant'?{messageId:currentMessageId,turnIndex,text:''}:null; if(currentTranscript) transcript.push(currentTranscript); send('message_start',{messageId:currentMessageId,role:event.message?.role || 'unknown',turnIndex}); }
@@ -366,17 +601,18 @@ async function streamPiAgent(payload, res){
       if(ae?.type==='text_delta'){ const delta=ae.delta || ''; textParts.push(delta); if(currentTranscript) currentTranscript.text += delta; send('text_delta',{...common,delta}); }
       else if(ae?.type==='text_start') send('text_start',common);
       else if(ae?.type==='text_end') send('text_end',{...common,content:ae.content || ''});
-      else if(ae?.type==='thinking_start') send('thinking_start',common);
-      // Private chain-of-thought is intentionally not forwarded to the browser.
-      // Native-style visibility is represented by thinking_start/end activity only.
-      else if(ae?.type==='thinking_end') send('thinking_end',common);
+      else if(ae?.type==='thinking_start'){ thinkingStartedAt=Date.now(); send('thinking_start',{...common,timestamp:thinkingStartedAt}); }
+      // Pi-style thinking visibility without exposing private chain-of-thought.
+      // The browser receives lifecycle and duration only; thinking content is
+      // never forwarded or rendered.
+      else if(ae?.type==='thinking_end'){ const endedAt=Date.now(); const durationMs=thinkingStartedAt ? endedAt-thinkingStartedAt : null; if(durationMs!==null) thinkingSpans.push({turnIndex,messageId:currentMessageId,durationMs}); send('thinking_end',{...common,timestamp:endedAt,durationMs}); thinkingStartedAt=null; }
       else if(ae?.type==='toolcall_start') send('toolcall_start',common);
       else if(ae?.type==='toolcall_delta') send('toolcall_delta',{...common,delta:ae.delta || ''});
-      else if(ae?.type==='toolcall_end') send('toolcall_end',{...common,toolCall:ae.toolCall || null});
+      else if(ae?.type==='toolcall_end') send('toolcall_end',{...common,toolCall:ae.toolCall ? {name:ae.toolCall.name,id:ae.toolCall.id,arguments:summarizeToolValue(ae.toolCall.arguments)} : null});
     }else if(event.type==='message_end'){
       send('message_end',{messageId:currentMessageId,turnIndex,role:event.message?.role || 'unknown'});
       if(event.message?.role==='assistant'){ latestUsage=event.message.usage || null; send('usage',{usage:latestUsage,stats:sessionStats(entry)}); }
-    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:event.args || event.input || {},turnIndex}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); childControllers.set(item.toolCallId,createSubagentCancellationController(entry,item.toolCallId)); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',item); }
+    }else if(event.type==='tool_execution_start'){ const item={type:'tool_start',tool:event.toolName || 'tool',toolCallId:event.toolCallId,input:summarizeToolValue(event.args || event.input || {}),turnIndex}; toolEvents.push(item); if(item.tool==='subagent'){ entry.telemetry.subagents.set(item.toolCallId,{id:item.toolCallId,status:'running',startedAt:Date.now(),input:item.input}); childControllers.set(item.toolCallId,createSubagentCancellationController(entry,item.toolCallId)); send('subagent_start',{id:item.toolCallId,input:item.input}); } send('tool_start',item); }
     else if(event.type==='tool_execution_update') send('tool_update',{tool:event.toolName || 'tool',toolCallId:event.toolCallId,partial:summarizeToolValue(event.partialResult),turnIndex});
     else if(event.type==='tool_execution_end'){ const item={type:'tool_end',tool:event.toolName || 'tool',toolCallId:event.toolCallId,error:!!event.isError,result:summarizeToolValue(event.result),turnIndex}; toolEvents.push(item); if(item.tool==='subagent' && entry.telemetry.subagents.has(event.toolCallId)){const sub=entry.telemetry.subagents.get(event.toolCallId);const details=event.result?.details || event.result?.data?.details || {};if(details.asyncId)sub.asyncId=details.asyncId;if(details.asyncDir)sub.asyncDir=details.asyncDir;sub.status=item.error?(sub.status==='cancel_requested'?'cancelled':'error'):'complete';sub.finishedAt=Date.now();sub.error=item.error;childControllers.delete(event.toolCallId);send('subagent_end',{id:event.toolCallId,status:sub.status,asyncId:sub.asyncId});} send('tool_end',item); }
     else if(event.type==='agent_start') send('agent_start');
@@ -385,34 +621,55 @@ async function streamPiAgent(payload, res){
     else if(event.type==='turn_end') send('turn_end',{turnIndex,toolResults:(event.toolResults || []).map(summarizeToolValue)});
     else if(event.type==='compaction_start'){entry.telemetry.compactions.push({startedAt:Date.now(),reason:event.reason || 'automatic'});send('compaction_start',{message:'Pi is compacting context…',reason:event.reason});}
     else if(event.type==='compaction_end') send('compaction_end',{message:event.errorMessage || (event.aborted?'Context compaction aborted':'Context compaction complete'),reason:event.reason,result:event.result ? {summary:String(event.result.summary || '').slice(0,1000),tokensBefore:event.result.tokensBefore || null,estimatedTokensAfter:event.result.estimatedTokensAfter || null} : null,aborted:!!event.aborted,willRetry:!!event.willRetry,errorMessage:event.errorMessage});
-    else if(event.type==='auto_retry_start'){entry.telemetry.retries.push({startedAt:Date.now(),attempt:event.attempt || entry.session.retryAttempt || 1,source:event.source || 'provider',error:event.errorMessage || ''});send('retry_start',{message:'Pi is retrying the provider request…',attempt:event.attempt || entry.session.retryAttempt || 1,maxAttempts:event.maxAttempts,delayMs:event.delayMs,errorMessage:event.errorMessage});}
+    else if(event.type==='auto_retry_start'){
+      const errorMessage=event.errorMessage || 'transient provider failure';
+      const permanent=isPermanentProviderQuotaError(errorMessage);
+      entry.telemetry.retries.push({startedAt:Date.now(),attempt:event.attempt || entry.session.retryAttempt || 1,source:event.source || 'provider',error:errorMessage});
+      if(permanent) entry.session.abortRetry();
+      send('retry_start',{message:permanent?'Pi stopped retrying because this model quota is exhausted':'Pi is retrying the provider request…',attempt:event.attempt || entry.session.retryAttempt || 1,maxAttempts:event.maxAttempts,delayMs:event.delayMs,errorMessage,model:entry.session.model && modelLabel(entry.session.model),...requestedModelInfo(payload,entry),permanent});
+    }
     else if(event.type==='auto_retry_end') send('retry_end',{success:event.success,attempt:event.attempt,finalError:event.finalError});
     else if(event.type==='queue_update') send('queue_update',{steering:Array.isArray(event.steering)?event.steering.length:(event.steering || 0),followUp:Array.isArray(event.followUp)?event.followUp.length:(event.followUp || 0)});
   });
   activeChats.set(chatId,{entry,payload,send,stopRequested:false,startedAt:Date.now()});
-  res.on('close',()=>{ const active=activeChats.get(chatId); if(active && !closed){ active.stopRequested=true; entry.session.abort().catch(()=>{}); } });
-  send('session_start',{sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,model:entry.model && (entry.model.provider+'/'+entry.model.id),activeTools:entry.session.getActiveToolNames()});
+  res.on('close',()=>{
+    const active=activeChats.get(chatId);
+    // A normal SSE close after the response has settled must not abort or
+    // leave the conversation marked busy. Only abort an actually running turn.
+    if(active && !closed && entry.session.isStreaming){ active.stopRequested=true; entry.session.abort().catch(()=>{}); }
+  });
+  send('session_start',{sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,chatId,...requestedModelInfo(payload,entry),model:entry.model && modelLabel(entry.model),thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames()});
+  send('activity',{message:'Pi session ready · '+(entry.session.getActiveToolNames().length||0)+' focused tools'});
   try{
     await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
-    const content=finalAssistantText(entry.session,textParts.join(''));
-    if(!content) throw new Error('Pi completed without an assistant response');
-    const changedFiles=changedWorkspaceFiles(beforeWorkspaceFiles);
-    send('done',{content,agent:'pi',protocol:entry.protocol,tools:toolEvents,transcript:transcript.filter(item=>item.text),activeTools:entry.session.getActiveToolNames(),files:workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    const content=finalAssistantText(entry.session,textParts.join(''),beforeMessageCount);
+    const stopReason=latestStopReason(entry.session,beforeMessageCount);
+    const assistantError=latestAssistantError(entry.session,beforeMessageCount);
+    if(assistantError) throw new Error(assistantError.errorMessage || 'Pi provider stopped: '+assistantError.stopReason);
+    if(stopReason==='length' || stopReason==='max_tokens') send('incomplete',{reason:stopReason,message:'Pi reached the provider output limit; ask for continuation to continue.'});
+    if(!content){
+      const recent=entry.session.messages.slice(beforeMessageCount).map(m=>({role:m.role,stopReason:m.stopReason,error:m.errorMessage,content:textBlock(m.content).slice(0,240)}));
+      throw new Error('Pi completed without an assistant response'+(recent.length?' (recent messages: '+JSON.stringify(recent)+')':''));
+    }
+    const changedFiles=payload.indicatorFastLane === true ? [] : changedWorkspaceFiles(beforeWorkspaceFiles);
+    send('done',{content,agent:'pi',protocol:entry.protocol,chatId,stopReason,complete:!['length','max_tokens'].includes(stopReason),...requestedModelInfo(payload,entry),tools:toolEvents,transcript:transcript.filter(item=>item.text),lifecycle,thinking:thinkingSpans,thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames(),files:payload.indicatorFastLane === true ? [] : workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    send('activity',{message:changedFiles.length ? 'Pi finished · '+changedFiles.length+' workspace change(s) detected' : 'Pi finished · no workspace files changed'});
   }catch(error){
     const active=activeChats.get(chatId);
     if(active?.stopRequested) send('aborted',{message:'Pi stopped'});
-    else send('error',{error:String(error && error.message || error)});
+    else send('error',{error:String(error && error.message || error),chatId,...requestedModelInfo(payload,entry)});
   }finally{
-    unsubscribe(); activeChats.delete(chatId); closed=true;
+    unsubscribe(); activeChats.delete(chatId); streamLocks.delete(chatId); closed=true;
     if(!res.destroyed) res.end();
   }
 }
-async function runPiAgent(payload){
+async function runPiAgent(input){
+  const payload=normalizePiPayload(input || {});
   let result;
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
-  const entry=await sessionForPayload(payload); writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeWorkspaceFiles=workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
-  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''));return {content,agent:'pi',protocol:entry.protocol,activeTools:entry.session.getActiveToolNames(),changedFiles:changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
+  const entry=await sessionForPayload(payload); await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); if(payload.indicatorFastLane !== true) writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeMessageCount=entry.session.messages.length; const beforeWorkspaceFiles=payload.indicatorFastLane === true ? null : workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''),beforeMessageCount);return {content,agent:'pi',protocol:entry.protocol,stopReason:latestStopReason(entry.session,beforeMessageCount),activeTools:entry.session.getActiveToolNames(),changedFiles:payload.indicatorFastLane === true ? [] : changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
   const id=sessionKey(payload); const old=sessions.get(id);
@@ -429,7 +686,7 @@ async function nativeSessionOperation(payload){
   if(!entry) return {ok:false,error:'No active Pi session'};
   if(action==='tree'){ const result=await entry.session.navigateTree(String(payload.entryId),{summarize:!!payload.summarize,customInstructions:payload.instructions || undefined}); return {ok:true,action,sessionId:entry.session.sessionId,cancelled:!!result.cancelled}; }
   if(action==='fork' || action==='clone'){
-    const source=pi.SessionManager.open(entry.session.sessionFile,safeChatDir(payload),workspaceRoot);
+    const source=pi.SessionManager.open(safeSessionFile(entry.session.sessionFile),safeChatDir(payload),workspaceRoot);
     source.createBranchedSession(String(payload.entryId));
     const file=source.getSessionFile();
     return replaceSession(chatId,{...payload,sessionFile:file});
@@ -448,37 +705,39 @@ async function controlPiAgent(payload){
   }
   if(!active && ['setModel','setThinking','sessionInfo'].includes(action)){
     const entry=await sessionForPayload(payload);
-    if(action==='setModel'){ const model=resolveNativeModel(entry.runtime,payload.model); await entry.session.setModel(model); entry.model=model; entry.protocol=model.api; return {ok:true,action,model:model.provider+'/'+model.id}; }
-    if(action==='setThinking'){ entry.session.setThinkingLevel(String(payload.level || 'medium')); return {ok:true,action,thinking:entry.session.thinkingLevel}; }
+    if(action==='setModel'){ const model=await withModelChangeLock(chatId,async()=>{const next=resolveNativeModel(entry.runtime,payload.model);await entry.session.setModel(next);entry.model=next;entry.protocol=next.api;return next;}); return {ok:true,action,model:model.provider+'/'+model.id,sessionId:entry.session.sessionId}; }
+    if(action==='setThinking'){ const level=String(payload.thinkingSelection==='native-default'?'':(payload.level || '')); if(level) entry.session.setThinkingLevel(level); else entry.session.setThinkingLevel(String(nativePiSettings().defaultThinkingLevel || 'medium')); return {ok:true,action,thinking:entry.session.thinkingLevel}; }
     return {ok:true,action,sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,model:entry.model && entry.model.provider+'/'+entry.model.id,thinking:entry.session.thinkingLevel,messages:entry.session.messages.length,activeTools:entry.session.getActiveToolNames(),autoCompaction:entry.session.autoCompactionEnabled !== false,stats:sessionStats(entry),leafId:entry.sessionManager.getLeafId(),entries:entry.sessionManager.getEntries().map(x=>({id:x.id,type:x.type,role:x.message?.role || '',text:textBlock(x.message?.content).slice(0,100)}))};
   }
   if(!active) return {ok:false,error:'No active Pi run for this conversation'};
   if(action==='abort'){active.stopRequested=true;await active.entry.session.abort();return {ok:true,action};}
-  if(action==='steer'){await active.entry.session.steer(String(payload.text || ''));return {ok:true,action};}
-  if(action==='followUp'){await active.entry.session.followUp(String(payload.text || ''));return {ok:true,action};}
+  if(action==='steer' || action==='followUp'){
+    const text=String(payload.text || '').trim(); if(!text) throw new Error('Control text is required');
+    const nextPayload={...active.payload,messages:[{role:'user',content:text}],intentText:text};
+    configureSessionTools(active.entry.session,nextPayload); active.payload=nextPayload;
+    if(action==='steer') await active.entry.session.steer(text);
+    else await active.entry.session.followUp(text);
+    return {ok:true,action,activeTools:active.entry.session.getActiveToolNames()};
+  }
   if(action==='compact'){await active.entry.session.compact(String(payload.text || '') || undefined);return {ok:true,action};}
-  if(action==='setModel'){ const model=resolveNativeModel(active.entry.runtime,payload.model); await active.entry.session.setModel(model); active.entry.model=model; active.entry.protocol=model.api; return {ok:true,action,model:model.provider+'/'+model.id}; }
-  if(action==='setThinking'){ active.entry.session.setThinkingLevel(String(payload.level || 'medium')); return {ok:true,action,thinking:active.entry.session.thinkingLevel}; }
+  if(action==='setModel'){
+    if(active.entry.session.isStreaming) throw new Error('Choose the model after the current Pi turn finishes');
+    const model=await withModelChangeLock(chatId,async()=>{const next=resolveNativeModel(active.entry.runtime,payload.model);await active.entry.session.setModel(next);active.entry.model=next;active.entry.protocol=next.api;return next;});
+    return {ok:true,action,model:model.provider+'/'+model.id,sessionId:active.entry.session.sessionId};
+  }
+  if(action==='setThinking'){ const level=String(payload.thinkingSelection==='native-default'?'':(payload.level || '')); active.entry.session.setThinkingLevel(level || String(nativePiSettings().defaultThinkingLevel || 'medium')); return {ok:true,action,thinking:active.entry.session.thinkingLevel}; }
   if(action==='sessionInfo'){ return {ok:true,action,sessionId:active.entry.session.sessionId,sessionFile:active.entry.session.sessionFile,model:active.entry.model && active.entry.model.provider+'/'+active.entry.model.id,thinking:active.entry.session.thinkingLevel,messages:active.entry.session.messages.length,activeTools:active.entry.session.getActiveToolNames(),autoCompaction:active.entry.session.autoCompactionEnabled !== false,stats:sessionStats(active.entry),leafId:active.entry.sessionManager.getLeafId(),entries:active.entry.sessionManager.getEntries().map(x=>({id:x.id,type:x.type,role:x.message?.role || '',text:textBlock(x.message?.content).slice(0,100)}))}; }
   throw new Error('Unknown Pi control action: '+action);
 }
 function resolveChartRequest(requestId, result, error){
   const safe=String(requestId || '').replace(/[^a-zA-Z0-9_-]/g,'_'); if(!safe) throw new Error('requestId is required');
-  const file=path.join(workspaceRoot,'.qpro-chart-request-'+safe+'.json'); if(!fs.existsSync(file)) throw new Error('Chart request is no longer pending');
-  let current={}; try{current=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){}
+  const file=path.join(workspaceRoot,'.qpro-chart-request-'+safe+'.json');
+  // The browser can receive tool_start before the extension creates its
+  // request file. Preserve an early response instead of losing it to a race.
+  let current={type:'chart_request',requestId:safe,decision:'pending',createdAt:Date.now()};
+  if(fs.existsSync(file)) try{current=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){ }
   if(error) current.error=String(error); else current.result=result;
   fs.writeFileSync(file,JSON.stringify(current,null,2)); return {ok:true,requestId:safe};
 }
-function resolveApproval(approvalId, value){
-  const safe=String(approvalId || '').replace(/[^a-zA-Z0-9_-]/g,'_');
-  if(!safe) throw new Error('approvalId is required');
-  const file=path.join(workspaceRoot,'.qpro-approval-'+safe+'.json');
-  if(!fs.existsSync(file)) throw new Error('Approval request is no longer pending');
-  let current={}; try{current=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){}
-  if(current.type==='question') current.answer=value;
-  else current.decision=value === 'approve' ? 'approve' : 'reject';
-  fs.writeFileSync(file,JSON.stringify(current,null,2));
-  return {ok:true,approvalId:safe};
-}
-function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } }
-module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,cancelPiSubagent,resolveApproval,resolveChartRequest};
+function clearPiSession(chatId){ for(const [id,e] of sessions){ if(!chatId || id === chatId){try{e.session.dispose();}catch(_){} sessions.delete(id);} } for(const id of sessionPromises.keys()){if(!chatId || id===chatId)sessionPromises.delete(id);} }
+module.exports={runPiAgent,streamPiAgent,controlPiAgent,clearPiSession,workspaceRoot,INDICATOR_CONTRACT,nativePiModels,nativePiSettings,nativePiCommands,nativePiSessions,nativePiSessionTree,nativePiResources,nativePiStatus,nativePiResourceAction,nativeSessionOperation,cancelPiSubagent,resolveChartRequest};

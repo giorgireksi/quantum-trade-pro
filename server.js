@@ -8,13 +8,62 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const PORT = Number(process.env.PORT) || 8080;
+const HOST = process.env.QPRO_HOST || '127.0.0.1';
 const FILE = path.join(__dirname, 'online_viewer_net (4).html');
+const MAX_BODY_BYTES = Math.max(1024 * 1024, Number(process.env.QPRO_MAX_BODY_BYTES) || 12 * 1024 * 1024);
+const QPRO_TOKEN = String(process.env.QPRO_TOKEN || '').trim();
+const ALLOWED_ORIGIN = String(process.env.QPRO_ALLOWED_ORIGIN || '').trim();
 // QPRO application state is server-owned, not browser-owned. Keep it beside
 // the isolated Pi workspace so clearing browser storage cannot erase it.
 const QPRO_STATE_DIR = path.join(__dirname, '.qpro');
 const QPRO_STATE_FILE = path.join(QPRO_STATE_DIR, 'workspace-state.json');
 const QPRO_STATE_BACKUP = QPRO_STATE_FILE+'.bak';
+const QPRO_INDICATOR_DIR = path.join(__dirname,'.qpro','pi-workspace','indicators');
+const QPRO_INDICATOR_MAX_BYTES = Math.max(64 * 1024, Number(process.env.QPRO_INDICATOR_MAX_BYTES) || 2 * 1024 * 1024);
 const piAgent = require('./pi-agent');
+function safeIndicatorPath(value){
+  const rel=String(value || '').replace(/\\/g,'/').replace(/^\/+/, '');
+  if(!/^indicators\/[a-zA-Z0-9._-]+\.js$/i.test(rel)) throw new Error('indicator path must be indicators/<name>.js');
+  const root=path.resolve(QPRO_INDICATOR_DIR);
+  const absolute=path.resolve(path.join(__dirname,'.qpro','pi-workspace'),rel);
+  if(absolute!==path.join(root,path.basename(absolute))) throw new Error('invalid indicator path');
+  if(fs.existsSync(absolute) && fs.lstatSync(absolute).isSymbolicLink()) throw new Error('indicator symlinks are not allowed');
+  return {rel,absolute};
+}
+function indicatorManifest(includeContent=false){
+  fs.mkdirSync(QPRO_INDICATOR_DIR,{recursive:true});
+  return fs.readdirSync(QPRO_INDICATOR_DIR,{withFileTypes:true}).filter(x=>x.isFile() && /\.js$/i.test(x.name)).map(entry=>{
+    const rel='indicators/'+entry.name, absolute=path.join(QPRO_INDICATOR_DIR,entry.name), stat=fs.statSync(absolute), raw=fs.readFileSync(absolute);
+    if(stat.size>QPRO_INDICATOR_MAX_BYTES) throw new Error(rel+' exceeds the indicator file size limit');
+    const item={path:rel,size:stat.size,mtime:stat.mtimeMs,hash:require('crypto').createHash('sha256').update(raw).digest('hex')};
+    if(includeContent)item.content=raw.toString('utf8');
+    return item;
+  });
+}
+function writeIndicatorFile(rel,content){
+  const target=safeIndicatorPath(rel); const raw=Buffer.from(String(content || ''),'utf8');
+  if(!raw.length) throw new Error('indicator file is empty');
+  if(raw.length>QPRO_INDICATOR_MAX_BYTES) throw new Error('indicator file exceeds the size limit');
+  fs.mkdirSync(QPRO_INDICATOR_DIR,{recursive:true});
+  if(fs.existsSync(target.absolute)){
+    const backupDir=path.join(__dirname,'.qpro','pi-workspace','.qpro-backups','indicators'); fs.mkdirSync(backupDir,{recursive:true,mode:0o700});
+    const backup=path.join(backupDir,Date.now()+'-'+path.basename(target.absolute)+'.bak'); fs.copyFileSync(target.absolute,backup); try{fs.chmodSync(backup,0o600);}catch(_){ }
+  }
+  const temp=target.absolute+'.tmp-'+process.pid+'-'+Date.now(); fs.writeFileSync(temp,raw,{mode:0o600}); fs.renameSync(temp,target.absolute); try{fs.chmodSync(target.absolute,0o600);}catch(_){ }
+  return {ok:true,path:target.rel,size:raw.length};
+}
+function readIndicatorFile(rel){
+  const target=safeIndicatorPath(rel);
+  if(!fs.existsSync(target.absolute)) throw new Error('indicator file not found');
+  const stat=fs.statSync(target.absolute);
+  if(!stat.isFile()) throw new Error('indicator path is not a file');
+  if(stat.size>QPRO_INDICATOR_MAX_BYTES) throw new Error(rel+' exceeds the indicator file size limit');
+  const raw=fs.readFileSync(target.absolute);
+  return {path:target.rel,size:stat.size,mtime:stat.mtimeMs,hash:require('crypto').createHash('sha256').update(raw).digest('hex'),content:raw.toString('utf8')};
+}
+function deleteIndicatorFile(rel){
+  const target=safeIndicatorPath(rel); if(fs.existsSync(target.absolute)) fs.unlinkSync(target.absolute); return {ok:true,path:target.rel,deleted:true};
+}
 
 function readQproState(){
   let lastError=null;
@@ -37,15 +86,32 @@ function writeQproState(snapshot){
 }
 
 const json = (res, code, obj) => {
-  res.writeHead(code, {'Content-Type':'application/json'});
+  res.writeHead(code, {'Content-Type':'application/json','Cache-Control':'no-store'});
   res.end(JSON.stringify(obj));
 };
-const readBody = async req => { let body=''; for await(const chunk of req) body += chunk; return body; };
+const readBody = async req => {
+  let body=''; let size=0;
+  for await(const chunk of req){ size += Buffer.byteLength(chunk); if(size > MAX_BODY_BYTES) throw Object.assign(new Error('request body too large'),{statusCode:413}); body += chunk; }
+  return body;
+};
+function authorized(req){
+  if(!QPRO_TOKEN) return HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
+  const value=String(req.headers.authorization || ''); return value === 'Bearer '+QPRO_TOKEN || String(req.headers['x-qpro-token'] || '') === QPRO_TOKEN;
+}
+function corsOrigin(req){
+  const origin=String(req.headers.origin || '');
+  if(ALLOWED_ORIGIN && origin===ALLOWED_ORIGIN) return origin;
+  if(!ALLOWED_ORIGIN && !origin) return '';
+  if(!ALLOWED_ORIGIN && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return origin;
+  return '';
+}
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if(req.method === 'OPTIONS'){ res.writeHead(204); res.end(); return; }
+  const origin=corsOrigin(req); if(origin) { res.setHeader('Access-Control-Allow-Origin',origin); res.setHeader('Vary','Origin'); }
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-QPRO-Token');
+  res.setHeader('Access-Control-Allow-Methods','GET,PUT,POST,OPTIONS');
+  if(req.method === 'OPTIONS'){ if(!origin && req.headers.origin) return json(res,403,{ok:false,error:'origin not allowed'}); res.writeHead(204); res.end(); return; }
+  if(req.url.startsWith('/api/') && !authorized(req)) return json(res,401,{ok:false,error:'QPRO authentication required'});
 
   if(req.method === 'GET' && req.url === '/api/ping'){
     return json(res, 200, {ok:true, token:'qpro', agent:'pi'});
@@ -54,10 +120,27 @@ const server = http.createServer(async (req, res) => {
     try{return json(res,200,readQproState());}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
   }
+  if(req.method === 'GET' && req.url === '/api/qpro/indicators'){
+    try{return json(res,200,{ok:true,indicators:indicatorManifest(false)});}
+    catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'GET' && req.url.startsWith('/api/qpro/indicator-file')){
+    try{const rel=new URL(req.url,'http://qpro.local').searchParams.get('path');return json(res,200,{ok:true,file:readIndicatorFile(rel)});}
+    catch(error){return json(res,404,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'POST' && req.url === '/api/qpro/indicator-file'){
+    let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
+    try{return json(res,200,writeIndicatorFile(payload.path,payload.content));}
+    catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'DELETE' && req.url.startsWith('/api/qpro/indicator-file')){
+    try{const rel=new URL(req.url,'http://qpro.local').searchParams.get('path');return json(res,200,deleteIndicatorFile(rel));}
+    catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
+  }
   if(req.method === 'PUT' && req.url === '/api/qpro/workspace'){
     let payload;
     try{payload=JSON.parse(await readBody(req));}
-    catch(_){return json(res,400,{ok:false,error:'bad json'});}
+    catch(error){return json(res,error?.statusCode || 400,{ok:false,error:error?.statusCode===413?'request body too large':'bad json'});}
     if(!payload || !payload.snapshot || typeof payload.snapshot!=='object') return json(res,400,{ok:false,error:'snapshot object required'});
     try{return json(res,200,writeQproState(payload.snapshot));}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
@@ -99,14 +182,15 @@ const server = http.createServer(async (req, res) => {
   if(req.method === 'POST' && req.url === '/api/pi/stream'){
     let payload;
     try{ payload = JSON.parse(await readBody(req)); }
-    catch(_){ return json(res, 400, {error:'bad json'}); }
+    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
     try{
       res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
       res.write(': pi-stream\n\n');
       await piAgent.streamPiAgent(payload || {}, res);
-      console.log(new Date().toISOString(), 'pi/stream complete model=' + (payload.piModel || 'Pi CLI default'));
+      console.log(new Date().toISOString(), 'pi/stream complete requestedModel=' + (payload.piModel || 'Pi CLI default'));
+
     }catch(error){
-      console.log(new Date().toISOString(), 'pi/stream err', error && error.message);
+      console.log(new Date().toISOString(), 'pi/stream err', error && error.message, 'chatId=' + String(payload?.chatId || 'default'), 'requestedModel=' + String(payload?.piModel || 'Pi CLI default'));
       if(!res.headersSent) return json(res, 502, {error:String(error && error.message || error)});
       res.write('event: error\ndata: '+JSON.stringify({type:'error',error:String(error && error.message || error)})+'\n\n');
       res.end();
@@ -117,7 +201,7 @@ const server = http.createServer(async (req, res) => {
   if(req.method === 'POST' && req.url === '/api/pi/control'){
     let payload;
     try{ payload = JSON.parse(await readBody(req)); }
-    catch(_){ return json(res, 400, {error:'bad json'}); }
+    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
     try{
       const action=String(payload?.action || '');
       if(['new','resume','fork','clone','tree','list'].includes(action)){
@@ -130,10 +214,6 @@ const server = http.createServer(async (req, res) => {
       if(action==='chartResult' || action==='chartError'){
         return json(res, 200, piAgent.resolveChartRequest(payload.requestId, payload.result, action==='chartError' ? payload.error : null));
       }
-      if(action==='approve' || action==='reject' || action==='answer'){
-        const value=action==='answer' ? payload.answer : action;
-        return json(res, 200, piAgent.resolveApproval(payload.approvalId,value));
-      }
       return json(res, 200, await piAgent.controlPiAgent(payload || {}));
     }catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
   }
@@ -143,7 +223,7 @@ const server = http.createServer(async (req, res) => {
   if(req.method === 'POST' && req.url === '/api/pi/chat'){
     let payload;
     try{ payload = JSON.parse(await readBody(req)); }
-    catch(_){ return json(res, 400, {error:'bad json'}); }
+    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
     try{ return json(res, 200, await piAgent.runPiAgent(payload || {})); }
     catch(error){ return json(res, 502, {error:String(error && error.message || error)}); }
   }

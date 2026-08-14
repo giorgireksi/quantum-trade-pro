@@ -1,10 +1,9 @@
 import { Type } from "typebox";
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, copyFileSync, chmodSync } from "node:fs";
+import { join, relative, resolve as resolvePath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const stateFile = (cwd: string, name: string) => join(cwd, `.qpro-${name}.json`);
-const approvalFile = (cwd: string, id: string) => join(cwd, `.qpro-approval-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
 function filesUnder(root: string, dir = root): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
@@ -15,6 +14,19 @@ function filesUnder(root: string, dir = root): string[] {
     else out.push(relative(root, full));
   }
   return out;
+}
+function backupIndicatorBeforeWrite(cwd: string, target: string) {
+  const absolute = resolvePath(cwd, target);
+  const root = resolvePath(cwd, "indicators");
+  const rel = relative(root, absolute);
+  if (!rel || rel.startsWith("..") || rel.includes("/..") || resolvePath(rel) === rel || !existsSync(absolute)) return;
+  const backupRoot = join(cwd, ".qpro-backups", "indicators");
+  mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+  const safe = rel.replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const backup = join(backupRoot, `${Date.now()}-${safe}.bak`);
+  copyFileSync(absolute, backup);
+  try { chmodSync(backup, 0o600); } catch {}
+  return relative(cwd, backup);
 }
 function sleep(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -27,70 +39,47 @@ function chartRequestFile(cwd: string, id: string) {
 }
 async function requestChartAction(cwd: string, toolCallId: string, action: string, params: any, signal?: AbortSignal) {
   const file = chartRequestFile(cwd, toolCallId);
-  writeFileSync(file, JSON.stringify({ type: "chart_request", requestId: toolCallId, action, params, decision: "pending", createdAt: Date.now() }, null, 2));
+  // The browser may answer immediately after tool_start, before this
+  // extension callback creates its request file. Preserve a completed early
+  // response instead of overwriting it with a fresh pending request.
+  let completed: any = null;
+  if (existsSync(file)) {
+    try {
+      const existing = JSON.parse(readFileSync(file, "utf8"));
+      if (existing?.result !== undefined || existing?.error) completed = existing;
+    } catch { /* tolerate an in-progress write */ }
+  }
+  if (!completed) writeFileSync(file, JSON.stringify({ type: "chart_request", requestId: toolCallId, action, params, decision: "pending", createdAt: Date.now() }, null, 2));
   const deadline = Date.now() + 30000;
   try {
     while (true) {
       if (signal?.aborted) throw new Error("Request cancelled");
       if (Date.now() >= deadline) throw new Error("QPRO chart request timed out; the browser may be disconnected");
       if (existsSync(file)) {
-        try {
-          const value = JSON.parse(readFileSync(file, "utf8"));
-          if (value.result !== undefined || value.error) {
-            if (value.error) throw new Error(String(value.error));
-            return value.result;
-          }
-        } catch (error) {
-          if (error instanceof Error && /Request cancelled|Chart action failed|^Error:/.test(error.message)) throw error;
-        }
+        let value: any;
+        try { value = JSON.parse(readFileSync(file, "utf8")); }
+        catch { continue; } // Browser may be midway through an atomic write.
+        if (value?.error) throw new Error(String(value.error));
+        if (value?.result !== undefined) return value.result;
       }
       await sleep(250, signal);
     }
   } finally { try { unlinkSync(file); } catch {} }
 }
-function needsApproval(event: any, cwd: string) {
-  const name = String(event.toolName || "");
-  const input = event.input || {};
-  if (name === "bash") {
-    const command = String(input.command || "");
-    return /(^|[;&|\n])\s*(sudo|rm\b|mkfs\b|dd\b|shutdown\b|reboot\b)|rm\s+[^\n]*(?:-r|-f)|git\s+reset\s+--hard|git\s+clean\s+-f|(?:npm|pnpm|yarn|pip)\s+install|curl\s+[^\n]*\|\s*(?:sh|bash)|chmod\s+777|>\s*\/|\bkill\s+-9/i.test(command);
-  }
-  if (name === "write" || name === "edit") {
-    const target = String(input.path || input.file || "");
-    if (!target) return false;
-    const absolute = target.startsWith("/") ? target : join(cwd, target);
-    return !(absolute === cwd || absolute.startsWith(cwd + "/"));
-  }
-  return false;
-}
-async function waitForDecision(file: string, signal?: AbortSignal) {
-  while (true) {
-    if (existsSync(file)) {
-      try {
-        const value = JSON.parse(readFileSync(file, "utf8"));
-        if (value.decision === "approve" || value.decision === "reject" || value.answer !== undefined) return value;
-      } catch { /* wait for a complete JSON write */ }
-    }
-    await sleep(250, signal);
-  }
-}
-
 export default function qproTools(pi: ExtensionAPI) {
-  // Enforce approval for genuinely consequential built-in operations. Normal
-  // indicator reads/edits stay frictionless; risky shell commands and paths
-  // outside the isolated workspace pause until the browser decides.
+  // Keep indicator writes auditable by backing up the previous source file.
+  // Normal isolated workspace actions execute directly; the browser owns the
+  // separate validation and explicit Apply boundary.
   pi.on("tool_call", async (event, ctx) => {
-    if (!needsApproval(event, ctx.cwd)) return;
-    const file = approvalFile(ctx.cwd, event.toolCallId);
-    const input = event.input || {};
-    const detail = event.toolName === "bash" ? String(input.command || "") : String(input.path || input.file || "");
-    writeFileSync(file, JSON.stringify({ type: "approval", action: `${event.toolName}: ${detail}`, reason: "This operation can modify data outside the normal QPRO indicator workflow.", risk: "high", decision: "pending", createdAt: Date.now() }, null, 2));
-    try {
-      const decision = await waitForDecision(file, ctx.signal);
-      if (decision.decision !== "approve") return { block: true, reason: "Blocked by QPRO user approval" };
-    } catch (error) {
-      return { block: true, reason: String(error instanceof Error ? error.message : error) };
-    } finally { try { unlinkSync(file); } catch {} }
+    if (event.toolName === "write" || event.toolName === "edit") {
+      const target = String(event.input?.path || event.input?.file || "");
+      if (/^indicators(?:[\\/]|$)/i.test(target) || target.startsWith(ctx.cwd + "/indicators/")) {
+        backupIndicatorBeforeWrite(ctx.cwd, target);
+      }
+    }
+    // QPRO runs in its isolated workspace and does not pause tool execution
+    // for interactive approvals. Every action is reported in the Pi trace;
+    // indicator edits are backed up before writing.
   });
   pi.registerCommand("qpro-status", {
     description: "Show QPRO indicator workspace status",
@@ -108,7 +97,6 @@ export default function qproTools(pi: ExtensionAPI) {
       ctx.ui.notify(plan.steps?.map((step: any) => `${step.done ? "✓" : "○"} ${step.text}`).join("\n") || "Empty plan", "info");
     },
   });
-  const platformWrites = new Set(["switch_symbol", "set_timeframe", "set_type", "set_indicator", "set_indicator_settings", "create_drawing", "delete_drawing", "clear_drawings", "create_alert", "delete_alert", "set_setting", "set_layout", "replay_control", "create_drawing_group", "update_drawing_group", "delete_drawing_group", "switch_tab", "undo", "redo", "apply_template"]);
   pi.registerTool({
     name: "qpro_platform",
     label: "QPRO Platform",
@@ -117,30 +105,25 @@ export default function qproTools(pi: ExtensionAPI) {
     parameters: Type.Object({ operation: Type.String(), params: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
     async execute(id, params, signal, _onUpdate, ctx) {
       const operation=String(params.operation || "").trim();
+      const operationParams=params.params || {};
       if (!operation) throw new Error("platform operation is required");
-      if (platformWrites.has(operation)) {
-        const file=approvalFile(ctx.cwd, id);
-        writeFileSync(file, JSON.stringify({type:"approval",action:`QPRO platform action: ${operation}`,reason:"This changes the active trading workspace or chart.",risk:"normal",decision:"pending",createdAt:Date.now()}, null, 2));
-        try { const decision=await waitForDecision(file, signal); if(decision.decision!=="approve") return {content:[{type:"text",text:`Rejected by user: ${operation}`}],details:{approved:false,operation}}; }
-        finally { try { unlinkSync(file); } catch {} }
-      }
-      const result=await requestChartAction(ctx.cwd,id,"platform",{operation,params:params.params || {}},signal);
+      const result=await requestChartAction(ctx.cwd,id,"platform",{operation,params:operationParams},signal);
       return {content:[{type:"text",text:JSON.stringify(result)}],details:{operation}};
     },
   });
   pi.registerTool({
     name: "qpro_indicator_validate",
-    label: "Validate Indicator",
-    description: "Validate indicator JavaScript against the live QPRO contract and dry-run it on current chart data without importing it.",
-    parameters: Type.Object({ code: Type.String() }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "validate_indicator", params, signal)) }], details: {} }; },
+    label: "Validate Indicator File",
+    description: "Validate an indicator file already saved under indicators/ against the live QPRO contract and dry-run it on current chart data without applying it.",
+    parameters: Type.Object({ path: Type.String() }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "validate_indicator", params, signal)) }], details: { path: params.path } }; },
   });
   pi.registerTool({
     name: "qpro_indicator_import",
-    label: "Review and Import Indicator",
-    description: "Stage a validated indicator for browser review. QPRO shows the code, validation result, and Apply/Reject controls; never claim it is applied until the user clicks Apply.",
-    parameters: Type.Object({ name: Type.String(), code: Type.String(), notes: Type.Optional(Type.String()), settings: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "import_indicator", params, signal)) }], details: {} }; },
+    label: "Review Indicator File",
+    description: "Stage a saved indicators/*.js file for browser validation and explicit Apply review. Pass a workspace file path, never pasted code.",
+    parameters: Type.Object({ path: Type.String(), name: Type.Optional(Type.String()), notes: Type.Optional(Type.String()), settings: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
+    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "import_indicator", params, signal)) }], details: { path: params.path } }; },
   });
   pi.registerTool({
     name: "qpro_update_plan",
@@ -164,34 +147,6 @@ export default function qproTools(pi: ExtensionAPI) {
       all.push({ name: params.name, summary: params.summary, createdAt: Date.now() });
       writeFileSync(file, JSON.stringify(all, null, 2));
       return { content: [{ type: "text", text: `Checkpoint saved: ${params.name}` }], details: { name: params.name } };
-    },
-  });
-  pi.registerTool({
-    name: "qpro_request_approval",
-    label: "QPRO Approval",
-    description: "Pause and ask the QPRO user for approval before applying indicator changes, deleting files, or performing a consequential action. Never claim approval without receiving it.",
-    parameters: Type.Object({ action: Type.String(), reason: Type.String(), risk: Type.Optional(Type.String()) }),
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      const file = approvalFile(ctx.cwd, toolCallId);
-      writeFileSync(file, JSON.stringify({ type: "approval", action: params.action, reason: params.reason, risk: params.risk || "normal", decision: "pending", createdAt: Date.now() }, null, 2));
-      try {
-        const decision = await waitForDecision(file, signal);
-        return { content: [{ type: "text", text: decision.decision === "approve" ? `Approved: ${params.action}` : `Rejected by user: ${params.action}` }], details: { approved: decision.decision === "approve", action: params.action } };
-      } finally { try { unlinkSync(file); } catch {} }
-    },
-  });
-  pi.registerTool({
-    name: "qpro_ask_user",
-    label: "QPRO Question",
-    description: "Ask the user a blocking question when an indicator decision is genuinely ambiguous. Prefer choices when possible.",
-    parameters: Type.Object({ question: Type.String(), choices: Type.Optional(Type.Array(Type.String())) }),
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      const file = approvalFile(ctx.cwd, toolCallId);
-      writeFileSync(file, JSON.stringify({ type: "question", question: params.question, choices: params.choices || [], answer: undefined, createdAt: Date.now() }, null, 2));
-      try {
-        const answer = await waitForDecision(file, signal);
-        return { content: [{ type: "text", text: `User answer: ${String(answer.answer)}` }], details: { answer: answer.answer } };
-      } finally { try { unlinkSync(file); } catch {} }
     },
   });
 }
