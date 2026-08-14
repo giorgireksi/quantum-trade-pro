@@ -259,33 +259,24 @@ function ensureWorkspace(options={}){
   else if(fs.existsSync(extensionTarget)) try{fs.unlinkSync(extensionTarget);}catch(_){}
   const agents = path.join(workspaceRoot,'AGENTS.md');
   if(!fs.existsSync(agents)) fs.writeFileSync(agents, [
-    '# QPRO Pi Indicator Project', '',
-    'You are the adaptive Pi platform assistant for Quantum Trade Pro. Work naturally across conversation, chart analysis, workspace inspection, platform control, and indicator engineering.', '',
-    '## Scope',
-    '- Do not assume every request is about indicators.',
-    '- Use the smallest necessary QPRO platform capability only when needed or explicitly requested.',
-    '- Work primarily inside this workspace and its indicators/ directory.',
-    '- Do not modify the QPRO application HTML or backend unless the user explicitly asks for platform engineering.',
-    '- For indicator changes, edit the existing relevant indicators/*.js file in place when it exists; do not regenerate a replacement unless the user explicitly asks for a rewrite or new version.',
-    '- Before editing an existing indicator, read only that file, preserve unrelated code, and describe the intended fix.',
-    '- After editing, validate the file and report the complete final path; the user may copy the saved file directly.',
-    '- Explain changes briefly and mention files changed.', '',
-    '## Indicator workflow',
-    '1. Read INDICATOR_CONTRACT.md before creating or changing an indicator.',
-    '2. Answer general questions and greetings normally; inspect or change the platform only when useful.',
-    '3. If the requested indicator file exists, edit it in place; only create a new file when no target exists or the user asks for a new version.',
-    '4. Inspect related indicator files and use the coding tools normally.',
-    '5. Validate the code against the platform contract before recommending import.',
-    '6. Execute normal workspace and platform actions directly; do not stop for interactive approval.',
-    '7. Ask a concise question only when required information is genuinely missing; otherwise choose sensible defaults.',
-    '8. Keep private chain-of-thought hidden; provide concise reasoning summaries only.', ''
+    '# QPRO Pi Workspace', '',
+    'This is a normal isolated Pi project. Use native Pi behavior, session history, tools, resources, skills, extensions, compaction, and model settings.', '',
+    '## QPRO boundaries',
+    '- Work in this workspace; do not modify the QPRO application or backend unless the user explicitly asks for platform engineering.',
+    '- Indicator source files under indicators/*.js are the only importable indicator artifacts.',
+    '- For indicator work, read INDICATOR_CONTRACT.md, save complete JavaScript under indicators/, and validate the saved file before recommending it.',
+    '- Pasted JavaScript in chat is informational only and must not be treated as an import artifact.',
+    '- The browser owns the final validation/import boundary. Never claim an indicator is applied until QPRO confirms validation and the user explicitly uses Apply.',
+    '- Execute requested workspace and platform actions directly; do not pause for an approval workflow invented by QPRO.',
+    '- Ask concise questions only when required information is genuinely missing, and summarize files or state changes afterward.', ''
+
   ].join('\\n'));
   const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
   if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
   const contract = path.join(workspaceRoot,'INDICATOR_CONTRACT.md');
   if(!fs.existsSync(contract)) fs.writeFileSync(contract,INDICATOR_CONTRACT);
   const readme = path.join(workspaceRoot,'README.md');
-  if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# QPRO Pi Platform Workspace\n\nThis workspace supports general conversation, chart analysis, platform control, workspace inspection, and indicator engineering. Use `indicators/` for validated custom indicators.\n');
+  if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# QPRO Pi Workspace\n\nThis is an isolated, normal Pi project. QPRO supplies only its workspace and indicator/import boundaries; Pi owns conversation history, tools, resources, skills, extensions, compaction, and model behavior.\n\nIndicator source files under `indicators/*.js` are the only import source. QPRO validates saved files against the platform contract, and the user must explicitly Apply a validated file before it reaches the chart. Pasted JavaScript in chat is informational only.\n');
 }
 ensureWorkspace();
 function textBlock(content){
