@@ -35,12 +35,12 @@ Always run QPRO through `./open_qpro.sh`; the browser UI connects to the local n
 Open the AI Assistant and select ⚙ Pi settings:
 - Choose a native Pi CLI model and thinking level.
 - Native Pi owns providers, authentication, skills, extensions, prompts, and model discovery through `~/.pi/agent/`.
-- QPRO adds only adaptive platform instructions and the lazy semantic platform gateway.
+- QPRO adds only minimal task-scoped platform context and the lazy semantic platform gateway; Pi remains native by default.
 - "Use CORS proxy": only relevant in single-file mode
 - 🧪 Test connection: verifies the endpoint from whatever mode you're in
 - The Model field has a searchable model picker. NVIDIA NIM's **↻ Models** button loads the live catalog securely through the local backend; if unavailable, a curated NVIDIA fallback list remains available.
 - Multiple open tabs stay synchronized live with `BroadcastChannel`. Durable QPRO workspace state is server-owned and written atomically to `.qpro/workspace-state.json` through `/api/qpro/workspace`; clearing browser cache/storage does not remove settings, indicators, drawings, alerts, AI history/context, symbol/timeframe, or imported-symbol data. Legacy localStorage/IndexedDB data is read only once for migration.
-- **Pi coding IDE agent** can run inside the AI assistant through the local backend. It uses Pi SDK sessions, the selected provider/model, editable system prompt, selected indicator file references/notes, and the full coding tool set (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`). Indicator work is isolated in `.qpro/pi-workspace/indicators/`; files are the only import source and still pass the platform validator before application.
+- **Pi coding IDE agent** runs inside the AI assistant through the local backend using native Pi SDK sessions, providers, history, compaction, resources, skills, extensions, and the full coding tool set. QPRO adds only task-scoped indicator and chart instructions. Indicator work is isolated in `.qpro/pi-workspace/indicators/`; files are the only import source and still pass the platform validator before explicit Apply.
 - Pi's QPRO workspace and persistent sessions live under `.qpro/` in this project. Models, providers, authentication, settings, skills, and extensions come directly from the native Pi CLI under `~/.pi/agent/`. QPRO sessions and indicator files do not mix with other projects.
 - QPRO now has one AI path: native Pi CLI. The former custom provider/API-key/CORS adapter is no longer used or served by `server.js`. Indicator code blocks in chat are informational only; file-based import is the sole supported path.
 - The Pi chat uses SSE streaming with live assistant deltas, tool activity, compaction/retry lifecycle events, and `/api/pi/control` actions for Stop, Steer, Follow-up, and Compact. The browser is a Pi-style client over the native SDK session rather than a blocking chatbot.
