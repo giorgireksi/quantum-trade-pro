@@ -47,6 +47,6 @@ Open the AI Assistant and select ⚙ Pi settings:
 - A project-local `qpro-pi-extension.ts` adds the QPRO platform gateway, indicator validation, backups, and `/qpro-status`. It is copied into `.qpro/pi-workspace/.pi/extensions/`, so it affects only QPRO and not other Pi projects.
 - The embedded UI exposes thinking-level selection, native model controls, session metadata, and the loaded Pi extension tools.
 - Native session management is available through the slash palette: `/new`, `/resume`, `/fork`, `/clone`, `/tree`, and `/session`. `/resume` lists persisted QPRO Pi sessions; `/session` exposes entry IDs for branching/tree navigation; the backend uses Pi SessionManager APIs for replacement and branching.
-- QPRO runs normal isolated workspace and platform actions directly. Indicator source files remain separate from chat output and require browser validation plus explicit Apply before reaching the chart.
+- QPRO runs normal isolated workspace and platform actions directly. Indicator source files remain separate from chat output. `node qpro-indicator-check.js indicators/<name>.js` provides a fast local preflight; live browser validation plus explicit Apply remain required before reaching the chart.
 - Added Pi resource inspection (`/api/pi/resources`) for skills, prompt templates, extensions, and load errors; a workspace Resources drawer exposes them.
 - Added context/usage telemetry, optional chart screenshot vision input, and `qpro_get_chart_context`, which reads the latest structured symbol/timeframe/indicator context from `QPRO_CHART_CONTEXT.md`.
