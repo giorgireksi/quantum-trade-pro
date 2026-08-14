@@ -229,7 +229,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if(req.method === 'GET' && (req.url === '/' || req.url === '/index.html')){
-    res.writeHead(200, {'Content-Type':'text/html'});
+    res.writeHead(200, {'Content-Type':'text/html', 'Cache-Control':'no-store'});
     return res.end(fs.readFileSync(FILE));
   }
   res.writeHead(404); res.end();

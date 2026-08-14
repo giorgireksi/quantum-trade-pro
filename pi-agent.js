@@ -190,23 +190,36 @@ function shouldUseDirectPineLane(payload={}){
   const followUp=/\b(?:translate|convert|port|rewrite)\b/i.test(latest) && users.some(m=>m!==users.at(-1) && containsPineSource(m.content));
   return hasSource || asksTranslate || followUp;
 }
+function shouldUseFastPineLane(payload={}){
+  if(payload.indicatorFastLane===true) return true;
+  const latest=latestPayloadText(payload);
+  if(!shouldUseDirectPineLane(payload)) return false;
+  const sourceStart=latest.search(/\/\/\s*@version\s*=/i);
+  const instruction=sourceStart>=0 ? latest.slice(0,sourceStart) : latest;
+  if(/\b(?:debug|fix|modify|edit|optimi[sz]e|refactor|review|analy[sz]e|explain|compare|merge|combine|multiple|platform|chart)\b/i.test(instruction)) return false;
+  return !payload.needsPlatformContext && !payload.workspaceIndicatorDiagnostic && !payload.workspaceIndicatorEdit;
+}
 function normalizePiPayload(input={}){
   const payload={...input};
   // The browser sends the selected model and selection mode explicitly.
   // Never inherit a stale chat model or provider fallback silently.
   if(!Object.prototype.hasOwnProperty.call(payload,'piModel')) payload.piModel='';
   if(!Object.prototype.hasOwnProperty.call(payload,'modelSelection')) payload.modelSelection=String(payload.piModel||'').trim()?'explicit':'native-default';
+  if(payload.forceNew) delete payload.sessionFile;
   if(shouldUseDirectPineLane(payload)){
     // Pine translation is file-first: Pi must save the translated indicator in
     // indicators/*.js so the browser can validate and apply that file.
-    payload.indicatorFastLane=false;
+    const fast=shouldUseFastPineLane(payload);
+    payload.indicatorFastLane=fast;
     payload.indicatorOutputOnly=false;
     payload.indicatorTask=true;
     payload.workspaceIndicatorEdit=true;
     payload.indicatorFileOnly=true;
-    payload.intentText='create an indicator file from the supplied Pine source';
+    payload.indicatorRequestId ||= crypto.createHash('sha256').update(String(latestPayloadText(payload))).digest('hex').slice(0,16);
+    payload.intentText=fast ? 'create one indicator file from the supplied Pine source' : 'create an indicator file from the supplied Pine source';
     payload.needsPlatformContext=false;
     payload.workspaceContext='';
+    if(fast) delete payload.sessionFile;
   }
   return payload;
 }
@@ -217,7 +230,7 @@ function capabilityProfile(payload={}, text=''){
   const indicatorEditIntent=explicitIndicator && (payload.workspaceIndicatorEdit===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:create|implement|modify|edit|fix|debug|refactor|change|update|save|write|add|remove|delete|rewrite|repair)\b/i.test(value)));
   const indicatorDiagnosticIntent=explicitIndicator && (payload.workspaceIndicatorDiagnostic===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:error|bug|broken|invalid|fail(?:s|ed|ure)?|issue|problem|wrong|diagnos)/i.test(value)));
   const translationIntent=/\b(?:translate|translation|convert)\b[\s\S]{0,100}\b(?:pine|tradingview|pinescript|pine\s*script)\b|\b(?:pine|tradingview|pinescript|pine\s*script)\b[\s\S]{0,100}\b(?:translate|translation|convert)\b/i.test(value);
-  if(fastIndicator) return {mode:'output-only',fastIndicator,explicitIndicator,translationIntent:true};
+  if(fastIndicator) return {mode:'fast-indicator',fastIndicator,explicitIndicator:true,translationIntent:true};
   const selected=payload.selectedIndicatorContext === true;
   // Pine translation is a deterministic no-tool lane. Never let a
   // translation request drift into chart probing, web research, or workspace
@@ -250,6 +263,11 @@ function configureSessionTools(session,payload={}){
     return {tools:[],profile,indicatorContract:profile.fastIndicator ? ' Return only the translated indicator JavaScript.' : ''};
   }
   const available=new Set(session.getAllTools().map(tool=>tool.name));
+  if(profile.mode==='fast-indicator'){
+    const names=['write'].filter(name=>available.has(name));
+    session.setActiveToolsByName(names);
+    return {tools:names,profile,indicatorContract:' Write the translated indicator file only; do not inspect unrelated workspace files or create a plan.'};
+  }
   const names=new Set();
   const add=(...items)=>items.forEach(name=>{if(available.has(name)) names.add(name);});
   if(profile.platformIntent) add('qpro_platform');
@@ -399,7 +417,7 @@ async function createSession(input){
     // Preserve Pi CLI's native system prompt; QPRO is an appended project
     // instruction layer, not a replacement for Pi's tool/compaction prompt.
     appendSystemPromptOverride:(base)=>[...base, String(payload.systemPrompt || 'You are a professional coding IDE agent.')+'\n\n'+(fastIndicator
-      ? 'You are in direct translation mode. SOURCE: TradingView Pine Script v5. TARGET: QPRO indicator JavaScript ES2020. Generate code only; do not test, validate, explain, use tools, or write files. Return one JavaScript code block. Use `const SETTINGS = [...]` only when inputs are needed (it must be an array). Define `function calculate(data, settings, MathTA)`. It must return `{lines, markers, bands, levels, barColors}`. Each line must use `{name, data:[{time, value}], color?, width?, pane?, type?}`; never use label/values/times. For plot(close), use `MathTA.series(data, "close")`. Use only data, settings, MathTA, Math, and plain arrays/objects. Preserve bar times and Pine plot/marker/band/level behavior. Omit unsupported Pine features with a comment. Return ONLY the code block.'
+      ? 'You are in fast file translation mode. SOURCE: TradingView Pine Script v5. TARGET: QPRO indicator JavaScript ES2020. Use the available write tool to save the complete result under indicators/<kebab-case-name>.js. Do not return a paste-only code block, do not inspect unrelated files, do not create a plan, and do not use subagents. Follow the QPRO contract supplied in the user turn and return only a concise saved-path summary.'
       : 'You are operating inside the QPRO indicator workspace. QPRO custom indicators use JavaScript ES2020 in indicators/*.js, not Pine, Python, or TypeScript. They may define SETTINGS and must define calculate(data, settings, MathTA), consuming OHLCV bars shaped {time, open, high, low, close, volume} and returning {lines, markers, bands, levels, barColors}; line data uses {time, value}. Read AGENTS.md, INDICATOR_CONTRACT.md, and QPRO_ARCHITECTURE.md when relevant. Use your Pi coding tools normally. Do not claim a chart change is applied until the platform validator/import boundary confirms it.')]
   });
   await loader.reload();
@@ -409,12 +427,12 @@ async function createSession(input){
   const sessionDir=safeChatDir(payload);
   fs.mkdirSync(sessionDir,{recursive:true});
   let sessionManager;
-  if(payload.sessionFile) sessionManager=pi.SessionManager.open(safeSessionFile(payload.sessionFile),sessionDir,workspaceRoot);
-  else if(payload.forceNew) sessionManager=pi.SessionManager.create(workspaceRoot,sessionDir);
+  if(payload.forceNew || fastIndicator) sessionManager=pi.SessionManager.create(workspaceRoot,sessionDir);
+  else if(payload.sessionFile) sessionManager=pi.SessionManager.open(safeSessionFile(payload.sessionFile),sessionDir,workspaceRoot);
   else sessionManager=pi.SessionManager.continueRecent(workspaceRoot,sessionDir);
   const thinking=thinkingSelection(payload);
   const requestedThinking=thinking.mode==='explicit' ? thinking.requested : nativeThinkingLevel();
-  const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:requestedThinking,tools:fastIndicator ? [] : undefined});
+  const {session,extensionsResult}=await pi.createAgentSession({cwd:workspaceRoot,agentDir:agentRoot,model,modelRuntime:runtime,resourceLoader:loader,settingsManager,sessionManager,thinkingLevel:requestedThinking});
   const activeModel=session.model || model;
   if(!activeModel) throw new Error('Pi CLI has no active model. Configure a provider with `pi /login` or in ~/.pi/agent/auth.json.');
   if(model && (activeModel.provider!==model.provider || activeModel.id!==model.id)){
@@ -510,7 +528,13 @@ async function nativePiSessions(){
 }
 function sessionForPayload(input){
   const payload=normalizePiPayload(input || {});
-  const id=sessionKey(payload); const entry=sessions.get(id);
+  const id=sessionKey(payload);
+  if(payload.forceNew){
+    const existing=sessions.get(id);
+    if(existing){try{existing.session.dispose();}catch(_){} sessions.delete(id);}
+    sessionPromises.delete(id);
+  }
+  const entry=sessions.get(id);
   if(entry) return Promise.resolve(entry);
   if(sessionPromises.has(id)) return sessionPromises.get(id);
   const pending=createSession(payload).then(created=>{sessions.set(id,created);return created;}).finally(()=>sessionPromises.delete(id));
@@ -529,7 +553,7 @@ function makePrompt(entry,payload){
     const pineSource=[...(payload.messages || [])].reverse().find(m=>m?.role==='user' && containsPineSource(m.content));
     const sourceText=textBlock(pineSource?.content).trim();
     const source=sourceText && sourceText!==latestText ? '\n\nPINE SOURCE TO TRANSLATE:\n'+sourceText : '';
-    return latestText+source+'\n\nThis is a direct Pine translation request. Return ONLY the complete JavaScript code block. Do not read workspace files, inspect chart state, use tools, ask for approval, or invent missing source.';
+    return latestText+source+'\n\nQPRO INDICATOR CONTRACT:\n'+INDICATOR_CONTRACT+'\n\nFAST FILE TRANSLATION: use the write tool exactly once to save the complete translated indicator under indicators/<kebab-case-name>.js. Do not read unrelated files, create a plan, use subagents, inspect chart state, or paste the full source into your response. Return only a concise summary and the exact saved path.';
   }
   if(payload.indicatorFileOnly){
     return latestText+'\n\nThis is a file-only indicator request. Translate or implement the indicator and write the complete result to indicators/<kebab-case-name>.js using the coding tools. Validate the saved file when possible. Return a concise summary and the exact saved path; do not paste the full source into the response and do not claim the chart was changed.';
@@ -542,7 +566,7 @@ function makePrompt(entry,payload){
   // Native Pi persists the conversation after the first turn. For a fresh
   // plain question, the current turn is sufficient; all other workflows keep
   // the normal full bounded history used by Pi/QPRO.
-  const prompt=entry.initialized || profile.mode==='output-only' || (!profile.platformIntent && !profile.researchIntent && !profile.fileIntent && !profile.writeIntent && !profile.explicitIndicator)
+  const prompt=!payload.forceNew && (entry.initialized || profile.mode==='output-only' || (!profile.platformIntent && !profile.researchIntent && !profile.fileIntent && !profile.writeIntent && !profile.explicitIndicator))
     ? latestText
     : promptWithHistory(payload.messages);
   return prompt + workspace + indicatorDirective;
@@ -589,7 +613,7 @@ async function streamPiAgent(input, res){
   try{ await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); }
   catch(error){ streamLocks.delete(chatId); throw error; }
   configureSessionTools(entry.session,payload);
-  const beforeWorkspaceFiles=payload.indicatorFastLane === true ? null : workspaceFiles({includeContent:true,maxContent:512000});
+  const beforeWorkspaceFiles=workspaceFiles({includeContent:!payload.indicatorFastLane,maxContent:512000});
   const beforeMessageCount=entry.session.messages.length;
   const textParts=[]; const toolEvents=[]; const transcript=[]; const thinkingSpans=[]; const lifecycle=[]; let closed=false; let latestUsage=null; let thinkingStartedAt=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null; let currentTranscript=null;
   const send=(type,data={})=>{ if(closed || res.destroyed) return; if(['turn_start','message_start','message_end','agent_start','agent_end','agent_settled','turn_end','tool_start','tool_end','compaction_start','compaction_end','retry_start','retry_end','queue_update','activity'].includes(type)) lifecycle.push({type,timestamp:Date.now(),...(type==='tool_start'||type==='tool_end'?{tool:data.tool,toolCallId:data.toolCallId,error:!!data.error}:{}),...(type==='activity'?{message:String(data.message||'')}:{}),...(type==='retry_start'?{message:String(data.message||''),attempt:data.attempt,maxAttempts:data.maxAttempts}:{}),...(type==='compaction_start'||type==='compaction_end'?{message:String(data.message||'')}: {})}); res.write('event: '+type+'\ndata: '+JSON.stringify({type,...data})+'\n\n'); };
@@ -638,7 +662,7 @@ async function streamPiAgent(input, res){
     // leave the conversation marked busy. Only abort an actually running turn.
     if(active && !closed && entry.session.isStreaming){ active.stopRequested=true; entry.session.abort().catch(()=>{}); }
   });
-  send('session_start',{sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,chatId,...requestedModelInfo(payload,entry),model:entry.model && modelLabel(entry.model),thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames()});
+  send('session_start',{sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,chatId,fastIndicator:payload.indicatorFastLane===true,...requestedModelInfo(payload,entry),model:entry.model && modelLabel(entry.model),thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames()});
   send('activity',{message:'Pi session ready · '+(entry.session.getActiveToolNames().length||0)+' focused tools'});
   try{
     await entry.session.prompt(makePrompt(entry,payload), payload.images?.length ? {images:payload.images} : undefined); entry.initialized=true;
@@ -651,8 +675,8 @@ async function streamPiAgent(input, res){
       const recent=entry.session.messages.slice(beforeMessageCount).map(m=>({role:m.role,stopReason:m.stopReason,error:m.errorMessage,content:textBlock(m.content).slice(0,240)}));
       throw new Error('Pi completed without an assistant response'+(recent.length?' (recent messages: '+JSON.stringify(recent)+')':''));
     }
-    const changedFiles=payload.indicatorFastLane === true ? [] : changedWorkspaceFiles(beforeWorkspaceFiles);
-    send('done',{content,agent:'pi',protocol:entry.protocol,chatId,stopReason,complete:!['length','max_tokens'].includes(stopReason),...requestedModelInfo(payload,entry),tools:toolEvents,transcript:transcript.filter(item=>item.text),lifecycle,thinking:thinkingSpans,thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames(),files:payload.indicatorFastLane === true ? [] : workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
+    const changedFiles=changedWorkspaceFiles(beforeWorkspaceFiles);
+    send('done',{content,agent:'pi',protocol:entry.protocol,chatId,fastIndicator:payload.indicatorFastLane===true,indicatorRequestId:payload.indicatorRequestId || null,stopReason,complete:!['length','max_tokens'].includes(stopReason),...requestedModelInfo(payload,entry),tools:toolEvents,transcript:transcript.filter(item=>item.text),lifecycle,thinking:thinkingSpans,thinkingLevel:entry.session.thinkingLevel,activeTools:entry.session.getActiveToolNames(),files:workspaceFiles({includeContent:false}),changedFiles,workspace:'isolated',sessionId:entry.session.sessionId,sessionFile:entry.session.sessionFile,compaction:entry.session.isCompacting || false,usage:latestUsage});
     send('activity',{message:changedFiles.length ? 'Pi finished · '+changedFiles.length+' workspace change(s) detected' : 'Pi finished · no workspace files changed'});
   }catch(error){
     const active=activeChats.get(chatId);
@@ -668,8 +692,8 @@ async function runPiAgent(input){
   let result;
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
-  const entry=await sessionForPayload(payload); await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); if(payload.indicatorFastLane !== true) writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeMessageCount=entry.session.messages.length; const beforeWorkspaceFiles=payload.indicatorFastLane === true ? null : workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
-  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''),beforeMessageCount);return {content,agent:'pi',protocol:entry.protocol,stopReason:latestStopReason(entry.session,beforeMessageCount),activeTools:entry.session.getActiveToolNames(),changedFiles:payload.indicatorFastLane === true ? [] : changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
+  const entry=await sessionForPayload(payload); await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); if(payload.indicatorFastLane !== true) writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeMessageCount=entry.session.messages.length; const beforeWorkspaceFiles=workspaceFiles({includeContent:false}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''),beforeMessageCount);return {content,agent:'pi',protocol:entry.protocol,stopReason:latestStopReason(entry.session,beforeMessageCount),activeTools:entry.session.getActiveToolNames(),changedFiles:changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId,fastIndicator:payload.indicatorFastLane===true,indicatorRequestId:payload.indicatorRequestId || null};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
   const id=sessionKey(payload); const old=sessions.get(id);
