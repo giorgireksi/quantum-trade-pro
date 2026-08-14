@@ -3,7 +3,6 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdir
 import { join, relative, resolve as resolvePath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const stateFile = (cwd: string, name: string) => join(cwd, `.qpro-${name}.json`);
 function filesUnder(root: string, dir = root): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
@@ -88,15 +87,6 @@ export default function qproTools(pi: ExtensionAPI) {
       ctx.ui.notify(`QPRO workspace: ${indicators.length} indicator file(s)`, "info");
     },
   });
-  pi.registerCommand("qpro-plan", {
-    description: "Show the current QPRO indicator plan",
-    handler: async (_args, ctx) => {
-      const file = stateFile(ctx.cwd, "plan");
-      if (!existsSync(file)) return ctx.ui.notify("No QPRO plan exists yet.", "info");
-      const plan = JSON.parse(readFileSync(file, "utf8"));
-      ctx.ui.notify(plan.steps?.map((step: any) => `${step.done ? "✓" : "○"} ${step.text}`).join("\n") || "Empty plan", "info");
-    },
-  });
   pi.registerTool({
     name: "qpro_platform",
     label: "QPRO Platform",
@@ -117,36 +107,5 @@ export default function qproTools(pi: ExtensionAPI) {
     description: "Validate an indicator file already saved under indicators/ against the live QPRO contract and dry-run it on current chart data without applying it.",
     parameters: Type.Object({ path: Type.String() }),
     async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "validate_indicator", params, signal)) }], details: { path: params.path } }; },
-  });
-  pi.registerTool({
-    name: "qpro_indicator_import",
-    label: "Review Indicator File",
-    description: "Stage a saved indicators/*.js file for browser validation and explicit Apply review. Pass a workspace file path, never pasted code.",
-    parameters: Type.Object({ path: Type.String(), name: Type.Optional(Type.String()), notes: Type.Optional(Type.String()), settings: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-    async execute(id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: JSON.stringify(await requestChartAction(ctx.cwd, id, "import_indicator", params, signal)) }], details: { path: params.path } }; },
-  });
-  pi.registerTool({
-    name: "qpro_update_plan",
-    label: "Update QPRO Plan",
-    description: "Create or update the visible QPRO indicator implementation plan. Use before multi-step indicator work.",
-    parameters: Type.Object({ steps: Type.Array(Type.Object({ text: Type.String(), done: Type.Optional(Type.Boolean()) })), current: Type.Optional(Type.String()) }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const plan = { steps: params.steps.map(step => ({ text: step.text, done: step.done === true })), current: params.current || "", updatedAt: Date.now() };
-      writeFileSync(stateFile(ctx.cwd, "plan"), JSON.stringify(plan, null, 2));
-      return { content: [{ type: "text", text: `QPRO plan updated: ${plan.steps.length} step(s).` }], details: plan };
-    },
-  });
-  pi.registerTool({
-    name: "qpro_checkpoint",
-    label: "QPRO Checkpoint",
-    description: "Save a named checkpoint note for the current indicator task.",
-    parameters: Type.Object({ name: Type.String(), summary: Type.String() }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const file = stateFile(ctx.cwd, "checkpoints");
-      const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
-      all.push({ name: params.name, summary: params.summary, createdAt: Date.now() });
-      writeFileSync(file, JSON.stringify(all, null, 2));
-      return { content: [{ type: "text", text: `Checkpoint saved: ${params.name}` }], details: { name: params.name } };
-    },
   });
 }

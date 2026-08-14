@@ -193,12 +193,9 @@ function normalizePiPayload(input={}){
   if(!Object.prototype.hasOwnProperty.call(payload,'piModel')) payload.piModel='';
   if(!Object.prototype.hasOwnProperty.call(payload,'modelSelection')) payload.modelSelection=String(payload.piModel||'').trim()?'explicit':'native-default';
   if(payload.forceNew) delete payload.sessionFile;
-  delete payload.indicatorFastLane;
-  delete payload.indicatorRequestId;
   if(shouldUseDirectPineLane(payload)){
     // Pine translation is file-first: Pi writes the translated indicator in
     // indicators/*.js so the browser can validate and apply that file.
-    payload.indicatorOutputOnly=false;
     payload.indicatorTask=true;
     payload.workspaceIndicatorEdit=true;
     payload.indicatorFileOnly=true;
@@ -208,45 +205,12 @@ function normalizePiPayload(input={}){
   }
   return payload;
 }
-function capabilityProfile(payload={}, text=''){
-  const value=String(payload.intentText || text || '').trim().toLowerCase();
-  const explicitIndicator=payload.indicatorTask === true;
-  const indicatorEditIntent=explicitIndicator && (payload.workspaceIndicatorEdit===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:create|implement|modify|edit|fix|debug|refactor|change|update|save|write|add|remove|delete|rewrite|repair)\b/i.test(value)));
-  const indicatorDiagnosticIntent=explicitIndicator && (payload.workspaceIndicatorDiagnostic===true || (/(?:indicator|pine|script|calculate|mathta|settings|code|file)/i.test(value) && /\b(?:error|bug|broken|invalid|fail(?:s|ed|ure)?|issue|problem|wrong|diagnos)/i.test(value)));
-  const translationIntent=/\b(?:translate|translation|convert)\b[\s\S]{0,100}\b(?:pine|tradingview|pinescript|pine\s*script)\b|\b(?:pine|tradingview|pinescript|pine\s*script)\b[\s\S]{0,100}\b(?:translate|translation|convert)\b/i.test(value);
-  const selected=payload.selectedIndicatorContext === true;
-  // Pine translation is a deterministic no-tool lane. Never let a
-  // translation request drift into chart probing, web research, or workspace
-  // inspection. If source code is missing, the model should simply ask for it.
-  if(translationIntent && !payload.needsPlatformContext && !payload.indicatorFileOnly) return {mode:'output-only',explicitIndicator:true,translationIntent};
-  const platformIntent=payload.needsPlatformContext === true || /\b(chart|symbol|timeframe|candle|ohlc|watchlist|alert|drawing|replay|layout|quote|price|market data|price data|indicator on (the )?chart|turn on|turn off|toggle|enable|disable|set .*timeframe)\b/i.test(value);
-  const researchIntent=/\b(web search|search the web|research|sources?|citations?|latest news|news|website|url|youtube|github)\b/i.test(value);
-  const sourceIntent=/\b(source|sources|citation|citations|verify|fact[- ]check|claim)\b/i.test(value);
-  const fetchIntent=/\b(url|website|youtube|video|github|repository)\b/i.test(value);
-  const analysisIntent=/\b(explain|compare|contrast|analy[sz]e|review|describe|summari[sz]e|understand|difference|how does)\b/i.test(value);
-  const outputIntent=/\b(return|show|give|generate|write|rewrite|fix|combine|merge|compose|convert|translate|improve|optimi[sz]e|refactor|create|build)\b/i.test(value);
-  const fileIntent=/\b(file|workspace|folder|directory|save|write to|create .*\.js|under indicators|inspect files?|read files?|codebase|repository|repo)\b/i.test(value);
-  const shellIntent=/\b(run|execute)\b[^\n]{0,30}\b(command|shell|terminal|bash|npm|node|script)\b|\b(shell|terminal|bash|npm|node)\b/i.test(value);
-  const writeIntent=/\b(create|implement|modify|edit|fix|debug|refactor|write|build|change|update|save|remove|delete)\b/i.test(value);
-  const validationIntent=/\b(validate|validation|test|dry[- ]?run|check the code|import|apply)\b/i.test(value);
-  const workspaceRead=/\b(workspace|codebase|repository|repo|project files?|inspect files?|read files?)\b/i.test(value);
-  const complex=/\b(subagent|sub-agent|delegate|parallel|team|multi[- ]step|complex)\b/i.test(value);
-  // Inline selected code and image input need no tools. A request to explain,
-  // compare, or return revised code stays a normal model turn unless the user
-  // explicitly asks Pi to inspect/save files or operate the chart.
-  const inlineOnly=(selected || analysisIntent || (explicitIndicator && outputIntent && !fileIntent)) && !indicatorEditIntent && !indicatorDiagnosticIntent && !platformIntent && !researchIntent && !shellIntent && !validationIntent && !fileIntent;
-  if(inlineOnly) return {mode:'output-only',explicitIndicator,selected,analysisIntent,outputIntent};
-  return {mode:'automatic',explicitIndicator,selected,platformIntent,researchIntent,sourceIntent,fetchIntent,analysisIntent,outputIntent,fileIntent: fileIntent || indicatorEditIntent || indicatorDiagnosticIntent,shellIntent,writeIntent,validationIntent: validationIntent || indicatorDiagnosticIntent,workspaceRead,indicatorEditIntent,indicatorDiagnosticIntent,complex};
-}
-function configureSessionTools(session,payload={}){
-  const text=latestPayloadText(payload).toLowerCase();
-  const profile=capabilityProfile(payload,text);
-  const available=new Set(session.getAllTools().map(tool=>tool.name));
-  // Native Pi remains authoritative for tool selection. QPRO only adds the
-  // isolated workspace and indicator validation boundary; it does not hide
-  // native tools based on a local intent classifier.
-  session.setActiveToolsByName([...available]);
-  return {tools:[...available],profile,indicatorContract:profile.explicitIndicator ? ' Use the QPRO indicator file and validation boundary.' : ''};
+function configureSessionTools(session){
+  const available=[...new Set(session.getAllTools().map(tool=>tool.name))];
+  // Native Pi owns tool choice. QPRO exposes the full native catalog and only
+  // adds the isolated workspace/validation boundary.
+  session.setActiveToolsByName(available);
+  return {tools:available};
 }
 function ensureWorkspace(options={}){
   fs.mkdirSync(path.join(workspaceRoot,'indicators'),{recursive:true});
@@ -343,7 +307,6 @@ function changedWorkspaceFiles(before){
 }
 async function createSession(input){
   const payload=normalizePiPayload(input || {});
-  const requestProfile=capabilityProfile(payload,latestPayloadText(payload));
   // Native Pi owns the session, resources, and tool catalog. QPRO adds only
   // the isolated workspace and its indicator boundary.
   ensureWorkspace();
@@ -388,7 +351,7 @@ async function createSession(input){
   const effectiveModel=session.model || model || activeModel;
   if(model && (effectiveModel.provider!==model.provider || effectiveModel.id!==model.id)) throw new Error('Pi model mismatch before request: requested '+modelLabel(model)+' but session selected '+modelLabel(effectiveModel));
   const activeProtocol=effectiveModel.api;
-  configureSessionTools(session,payload);
+  configureSessionTools(session);
   const commands=(extensionsResult.runtime.getCommands ? extensionsResult.runtime.getCommands() : []).map(command => ({name:command.name,description:command.description || '',source:command.source || 'extension',sourceInfo:command.sourceInfo ? {path:command.sourceInfo.path,scope:command.sourceInfo.scope,origin:command.sourceInfo.origin} : undefined}));
   return {session,runtime,model:effectiveModel,protocol:activeProtocol,commands,sessionManager,initialized:session.messages && session.messages.length > 0,telemetry:{startedAt:Date.now(),compactions:[],retries:[],subagents:new Map()}};
 }
@@ -489,24 +452,19 @@ function sessionForPayload(input){
   return pending;
 }
 function makePrompt(entry,payload){
-  const profile=capabilityProfile(payload,latestPayloadText(payload));
-  const workspace=profile.platformIntent && payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+String(payload.workspaceContext):'';
+  const workspace=payload.workspaceContext?'\n\nCURRENT TRADING CHART CONTEXT:\n'+String(payload.workspaceContext):'';
   const latest=[...(payload.messages || [])].reverse().find(m=>m && m.role==='user');
   const latestText=textBlock(latest && latest.content).trim();
   if(payload.indicatorFileOnly){
-    return latestText+'\n\nThis is a file-only indicator request. Translate or implement the indicator and write the complete result to indicators/<kebab-case-name>.js using the coding tools. Validate the saved file when possible. Return a concise summary and the exact saved path; do not paste the full source into the response and do not claim the chart was changed.';
+    return latestText+'\n\nThis is a file-first indicator request. Use your normal Pi coding workflow to translate or implement the indicator and write the complete result to indicators/<kebab-case-name>.js. Validate the saved file when useful. Return a concise summary and exact saved path; do not paste the full source or claim the chart changed.';
   }
-  if(profile.translationIntent && !payload.indicatorFileOnly) return latestText+'\n\nThis is a direct Pine translation request. Translate the Pine source already present in this turn or immediately preceding user turn. Do not read workspace files, inspect chart state, use tools, ask for approval, or invent missing source. If no Pine source is available, ask the user to paste or attach it.';
   // Preserve slash commands exactly. Pi's AgentSession expands extension
   // commands, prompt templates, and skills when prompt() receives raw /… text.
   if(/^\/\S+/.test(latestText)) return latestText;
-  const indicatorDirective=payload.indicatorTask ? '\n\nExplicit indicator task: read INDICATOR_CONTRACT.md only when needed, inspect only the relevant indicator file, edit an existing indicators/*.js file in place when present, preserve unrelated code, validate the saved result, and never claim application until QPRO confirms it. Indicator source is file-only: save complete JavaScript under indicators/<kebab-case-name>.js and refer to the path in your response; do not return a paste-only import artifact. Do not request interactive approval.' : '';
-  // Native Pi persists the conversation after the first turn. For a fresh
-  // plain question, the current turn is sufficient; all other workflows keep
-  // the normal full bounded history used by Pi/QPRO.
-  const prompt=!payload.forceNew && (entry.initialized || profile.mode==='output-only' || (!profile.platformIntent && !profile.researchIntent && !profile.fileIntent && !profile.writeIntent && !profile.explicitIndicator))
-    ? latestText
-    : promptWithHistory(payload.messages);
+  const indicatorDirective=payload.indicatorTask ? '\n\nThis is an indicator task. Use the normal Pi coding workflow in the isolated workspace, read the QPRO contract/source as needed, preserve unrelated behavior, validate when appropriate, and never claim application until QPRO confirms explicit Apply.' : '';
+  // Native Pi owns history. Only replay browser history when creating or
+  // replacing a session; continuing sessions already contain their prior turns.
+  const prompt=!payload.forceNew && entry.initialized ? latestText : promptWithHistory(payload.messages);
   return prompt + workspace + indicatorDirective;
 }
 function summarizeToolValue(value){
@@ -550,7 +508,7 @@ async function streamPiAgent(input, res){
   writeChartContext(payload);
   try{ await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); }
   catch(error){ streamLocks.delete(chatId); throw error; }
-  configureSessionTools(entry.session,payload);
+  configureSessionTools(entry.session);
   const beforeWorkspaceFiles=workspaceFiles({includeContent:true,maxContent:512000});
   const beforeMessageCount=entry.session.messages.length;
   const textParts=[]; const toolEvents=[]; const transcript=[]; const thinkingSpans=[]; const lifecycle=[]; let closed=false; let latestUsage=null; let thinkingStartedAt=null; const childControllers=new Map(); let turnIndex=-1; let messageIndex=0; let currentMessageId=null; let currentTranscript=null;
@@ -630,7 +588,7 @@ async function runPiAgent(input){
   let result;
   const fake={write(){},destroyed:false,end(){}};
   // Compatibility helper for non-stream callers/tests; the browser uses SSE.
-  const entry=await sessionForPayload(payload); await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); writeChartContext(payload); configureSessionTools(entry.session,payload); const beforeMessageCount=entry.session.messages.length; const beforeWorkspaceFiles=workspaceFiles({includeContent:true}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
+  const entry=await sessionForPayload(payload); await applyRequestedModel(entry,payload); await applyRequestedThinking(entry,payload); writeChartContext(payload); configureSessionTools(entry.session); const beforeMessageCount=entry.session.messages.length; const beforeWorkspaceFiles=workspaceFiles({includeContent:true}); const textParts=[]; const unsubscribe=entry.session.subscribe(e=>{if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta')textParts.push(e.assistantMessageEvent.delta||'');});
   try{await entry.session.prompt(makePrompt(entry,payload),payload.images?.length ? {images:payload.images} : undefined);entry.initialized=true;const content=finalAssistantText(entry.session,textParts.join(''),beforeMessageCount);return {content,agent:'pi',protocol:entry.protocol,stopReason:latestStopReason(entry.session,beforeMessageCount),activeTools:entry.session.getActiveToolNames(),changedFiles:changedWorkspaceFiles(beforeWorkspaceFiles),workspace:'isolated',sessionId:entry.session.sessionId};}finally{unsubscribe();}
 }
 async function replaceSession(chatId, payload){
