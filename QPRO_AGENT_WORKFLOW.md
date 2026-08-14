@@ -42,7 +42,7 @@ Live validation checks runtime execution and returned line/marker/band/level/bar
 
 ## Chart drawings
 
-Drawing actions are supported through the `qpro_platform` tool. For a drawing request, first read the relevant chart state/data when anchors are not supplied, then create the drawing and verify the returned state. Use chart coordinates, never screen pixels:
+Drawing actions are supported through the `qpro_platform` tool. Use `get_drawings` (or `get_state`) to obtain every chart drawing, including id, type, group, visibility, lock state, style, text, and all time/price anchors. For a drawing request, first read the relevant chart state/data when anchors are not supplied, then create the drawing and verify the returned state. Use chart coordinates, never screen pixels:
 
 ```json
 {"operation":"create_drawing","params":{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}],"style":{"color":"#2962ff"}}}
