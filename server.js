@@ -7,6 +7,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.QPRO_HOST || '127.0.0.1';
 const FILE = path.join(__dirname, 'online_viewer_net (4).html');
@@ -20,6 +21,8 @@ const QPRO_STATE_FILE = path.join(QPRO_STATE_DIR, 'workspace-state.json');
 const QPRO_STATE_BACKUP = QPRO_STATE_FILE+'.bak';
 const QPRO_INDICATOR_DIR = path.join(__dirname,'.qpro','pi-workspace','indicators');
 const QPRO_INDICATOR_MAX_BYTES = Math.max(64 * 1024, Number(process.env.QPRO_INDICATOR_MAX_BYTES) || 2 * 1024 * 1024);
+const QPRO_VALIDATION_DIR = path.join(__dirname,'.qpro','indicator-validation');
+const QPRO_VALIDATION_TIMEOUT_MS = Math.max(5000, Number(process.env.QPRO_VALIDATION_TIMEOUT_MS) || 30000);
 const piAgent = require('./pi-agent');
 function safeIndicatorPath(value){
   const rel=String(value || '').replace(/\\/g,'/').replace(/^\/+/, '');
@@ -64,6 +67,36 @@ function readIndicatorFile(rel){
 function deleteIndicatorFile(rel){
   const target=safeIndicatorPath(rel); if(fs.existsSync(target.absolute)) fs.unlinkSync(target.absolute); return {ok:true,path:target.rel,deleted:true};
 }
+function validationFile(id){
+  const safe=String(id || '').replace(/[^a-zA-Z0-9_-]/g,'');
+  if(!safe) throw new Error('validation request id required');
+  return path.join(QPRO_VALIDATION_DIR,safe+'.json');
+}
+function writeValidationRecord(file,record){
+  fs.mkdirSync(QPRO_VALIDATION_DIR,{recursive:true,mode:0o700});
+  const temp=file+'.tmp-'+process.pid+'-'+Date.now(); fs.writeFileSync(temp,JSON.stringify(record),{encoding:'utf8',mode:0o600}); fs.renameSync(temp,file);
+}
+function createValidationRequest(rel){
+  const target=safeIndicatorPath(rel);
+  if(!fs.existsSync(target.absolute)) throw new Error('indicator file not found');
+  const id='v_'+Date.now().toString(36)+'_'+crypto.randomBytes(6).toString('hex');
+  const file=validationFile(id);
+  writeValidationRecord(file,{id,path:target.rel,status:'pending',createdAt:Date.now()});
+  return {id,path:target.rel,file};
+}
+function claimValidationRequest(){
+  fs.mkdirSync(QPRO_VALIDATION_DIR,{recursive:true,mode:0o700});
+  const now=Date.now();
+  for(const name of fs.readdirSync(QPRO_VALIDATION_DIR).filter(x=>x.endsWith('.json')).sort()){
+    const file=path.join(QPRO_VALIDATION_DIR,name); let record;
+    try{record=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){continue;}
+    if(!record || record.status!=='pending') continue;
+    if(now-Number(record.createdAt||0)>QPRO_VALIDATION_TIMEOUT_MS){try{fs.unlinkSync(file);}catch(_){} continue;}
+    record.status='claimed'; record.claimedAt=now; writeValidationRecord(file,record);
+    return record;
+  }
+  return null;
+}
 
 function readQproState(){
   let lastError=null;
@@ -94,6 +127,22 @@ const readBody = async req => {
   for await(const chunk of req){ size += Buffer.byteLength(chunk); if(size > MAX_BODY_BYTES) throw Object.assign(new Error('request body too large'),{statusCode:413}); body += chunk; }
   return body;
 };
+const wait = ms => new Promise(resolve => setTimeout(resolve,ms));
+async function waitForValidation(record){
+  const deadline=Date.now()+QPRO_VALIDATION_TIMEOUT_MS;
+  while(Date.now()<deadline){
+    try{
+      const value=JSON.parse(fs.readFileSync(record.file,'utf8'));
+      if(value.status==='complete' || value.status==='error'){
+        try{fs.unlinkSync(record.file);}catch(_){ }
+        return value;
+      }
+    }catch(error){if(error.code!=='ENOENT') throw error;}
+    await wait(150);
+  }
+  try{fs.unlinkSync(record.file);}catch(_){ }
+  throw Object.assign(new Error('browser validation timed out; open QPRO in a browser and try again'),{statusCode:504});
+}
 function authorized(req){
   if(!QPRO_TOKEN) return HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
   const value=String(req.headers.authorization || ''); return value === 'Bearer '+QPRO_TOKEN || String(req.headers['x-qpro-token'] || '') === QPRO_TOKEN;
@@ -136,6 +185,29 @@ const server = http.createServer(async (req, res) => {
   if(req.method === 'DELETE' && req.url.startsWith('/api/qpro/indicator-file')){
     try{const rel=new URL(req.url,'http://qpro.local').searchParams.get('path');return json(res,200,deleteIndicatorFile(rel));}
     catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
+  }
+  // A live browser owns chartData and the QPRO runtime. External coding agents
+  // can request that browser to validate a saved file without gaining Apply
+  // authority or needing Pi's extension protocol.
+  if(req.method === 'GET' && req.url === '/api/qpro/indicator-validation-request'){
+    try{return json(res,200,{ok:true,request:claimValidationRequest()});}
+    catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'POST' && req.url === '/api/qpro/indicator-validation-result'){
+    let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
+    try{
+      const file=validationFile(payload.id); const current=JSON.parse(fs.readFileSync(file,'utf8'));
+      if(current.status!=='claimed') throw new Error('validation request is not claimed');
+      const target=safeIndicatorPath(current.path); if(payload.path && String(payload.path)!==current.path) throw new Error('validation path mismatch');
+      writeValidationRecord(file,{...current,status:payload.error?'error':'complete',path:target.rel,hash:payload.hash||null,validation:payload.validation||null,error:payload.error||null,completedAt:Date.now()});
+      return json(res,200,{ok:true,id:current.id});
+    }catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'POST' && req.url === '/api/qpro/indicator-validate'){
+    let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
+    let record;
+    try{record=createValidationRequest(payload.path); const result=await waitForValidation(record); if(result.status==='error') return json(res,502,{ok:false,error:result.error||'browser validation failed',path:result.path,validation:result.validation||null}); return json(res,200,{ok:true,path:result.path,hash:result.hash||null,validation:result.validation||null});}
+    catch(error){return json(res,error?.statusCode||504,{ok:false,error:String(error.message||error),path:payload.path||null});}
   }
   if(req.method === 'PUT' && req.url === '/api/qpro/workspace'){
     let payload;

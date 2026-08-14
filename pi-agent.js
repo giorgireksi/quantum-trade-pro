@@ -238,7 +238,11 @@ function ensureWorkspace(options={}){
   const architecture = path.join(workspaceRoot,'QPRO_ARCHITECTURE.md');
   if(!fs.existsSync(architecture)) fs.writeFileSync(architecture,QPRO_ARCHITECTURE);
   const contract = path.join(workspaceRoot,'INDICATOR_CONTRACT.md');
-  if(!fs.existsSync(contract)) fs.writeFileSync(contract,INDICATOR_CONTRACT);
+  const contractSource = path.join(appRoot,'QPRO_INDICATOR_CONTRACT.md');
+  if(!fs.existsSync(contract)){
+    if(fs.existsSync(contractSource)) fs.copyFileSync(contractSource,contract);
+    else fs.writeFileSync(contract,INDICATOR_CONTRACT);
+  }
   const readme = path.join(workspaceRoot,'README.md');
   if(!fs.existsSync(readme)) fs.writeFileSync(readme,'# QPRO Pi Workspace\n\nThis is an isolated, normal Pi project. QPRO supplies only its workspace and indicator/import boundaries; Pi owns conversation history, tools, resources, skills, extensions, compaction, and model behavior.\n\nIndicator source files under `indicators/*.js` are the only import source. QPRO validates saved files against the platform contract, and the user must explicitly Apply a validated file before it reaches the chart. Pasted JavaScript in chat is informational only.\n');
 }
