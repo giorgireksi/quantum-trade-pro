@@ -49,3 +49,5 @@ Drawing actions are supported through the `qpro_platform` tool. For a drawing re
 ```
 
 Common types include `trendline`, `ray`, `extended`, `arrow`, `horizontal`, `vertical`, `rectangle`, `fib`, `text`, and `path`. Preserve existing drawings; do not clear or delete them unless explicitly requested. Ask when a symbol, timeframe, anchor candles, price levels, or drawing type is ambiguous. A direct user request authorizes the requested drawing action, but the agent must report what it created and its anchors.
+
+A user can mark an analysis range with a `daterange` or `datepricerange` drawing. Read `get_state` to identify its `drawingId`, then request only its candles with `qpro_platform` `get_data` using `params: {drawingId, limit}`. Alternatively use `fromTime`/`toTime` or `bars`. This gives the agent actual OHLCV rows for technical analysis without reading unrelated history. Report truncation if the range exceeds the limit.
