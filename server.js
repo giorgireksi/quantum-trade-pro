@@ -23,6 +23,11 @@ const QPRO_INDICATOR_DIR = path.join(__dirname,'.qpro','pi-workspace','indicator
 const QPRO_INDICATOR_MAX_BYTES = Math.max(64 * 1024, Number(process.env.QPRO_INDICATOR_MAX_BYTES) || 2 * 1024 * 1024);
 const QPRO_VALIDATION_DIR = path.join(__dirname,'.qpro','indicator-validation');
 const QPRO_VALIDATION_TIMEOUT_MS = Math.max(5000, Number(process.env.QPRO_VALIDATION_TIMEOUT_MS) || 30000);
+const workspaceClients = new Set();
+function broadcastWorkspaceSnapshot(snapshot,savedAt=Date.now()){
+  const message='data: '+JSON.stringify({type:'workspace-sync',source:'server',revision:{time:savedAt,tab:'server'},data:snapshot})+'\n\n';
+  for(const res of workspaceClients){try{res.write(message);}catch(_){workspaceClients.delete(res);}}
+}
 const piAgent = require('./pi-agent');
 function safeIndicatorPath(value){
   const rel=String(value || '').replace(/\\/g,'/').replace(/^\/+/, '');
@@ -171,6 +176,11 @@ const server = http.createServer(async (req, res) => {
     try{return json(res,200,readQproState());}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
   }
+  if(req.method === 'GET' && req.url === '/api/qpro/workspace-events'){
+    res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
+    res.write(': qpro-workspace-events\n\n'); workspaceClients.add(res);
+    const cleanup=()=>workspaceClients.delete(res); req.on('close',cleanup); req.on('error',cleanup); return;
+  }
   if(req.method === 'GET' && req.url === '/api/qpro/indicators'){
     try{return json(res,200,{ok:true,indicators:indicatorManifest(false)});}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
@@ -216,7 +226,7 @@ const server = http.createServer(async (req, res) => {
     try{payload=JSON.parse(await readBody(req));}
     catch(error){return json(res,error?.statusCode || 400,{ok:false,error:error?.statusCode===413?'request body too large':'bad json'});}
     if(!payload || !payload.snapshot || typeof payload.snapshot!=='object') return json(res,400,{ok:false,error:'snapshot object required'});
-    try{return json(res,200,writeQproState(payload.snapshot));}
+    try{const result=writeQproState(payload.snapshot); broadcastWorkspaceSnapshot(payload.snapshot,result.savedAt); return json(res,200,result);}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
   }
 
