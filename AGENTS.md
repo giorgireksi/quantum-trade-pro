@@ -13,7 +13,7 @@ node qpro-platform.js get_data '{"bars":200}'
 node qpro-platform.js create_drawing '{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}]}'
 ```
 
-Use chart time/price anchors, never screen pixels. Read `get_state` / `get_data` / `get_drawings` before drawing when anchors are not supplied. Use `move_drawing`, `move_drawing_anchor`, and `update_drawing` for existing objects. Do not PUT `/api/qpro/workspace` to mutate the chart.
+Use chart time/price anchors, never screen pixels. Read `get_state` / `get_data` / `get_drawings` before drawing when anchors are not supplied. Use `move_drawing`, `move_drawing_anchor`, and `update_drawing` for existing objects. Use `get_chart_view`, `fit_chart`, and `scroll_to_realtime` for shared viewport controls. Do not PUT `/api/qpro/workspace` to mutate the chart.
 
 ## Indicator work
 

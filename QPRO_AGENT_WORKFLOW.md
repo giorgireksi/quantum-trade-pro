@@ -58,7 +58,7 @@ Live validation checks runtime execution and returned line/marker/band/level/bar
 
 ## Chart drawings
 
-Drawing actions apply immediately on the open chart. Use `get_drawings` or `get_state` first when anchors are not supplied. Use chart coordinates, never screen pixels:
+Drawing actions apply immediately on the open chart. Use `get_drawings` or `get_state` first when anchors are not supplied. Use `get_chart_view`, `fit_chart`, and `scroll_to_realtime` for viewport actions. Use chart coordinates, never screen pixels:
 
 ```bash
 node qpro-platform.js create_drawing '{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}],"style":{"color":"#2962ff"}}'
