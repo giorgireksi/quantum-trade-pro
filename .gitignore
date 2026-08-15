@@ -12,6 +12,8 @@ BTCUSDT_daily_3y.csv
 .qpro.pid
 .qpro.log
 
-# Pi workspace, persistent sessions, and app-local agent settings
-# These are intentionally isolated from ~/.pi/agent and contain user data.
+# Local workspace state, indicator files, and runtime artifacts
 .qpro/
+
+# Local coding-agent settings
+.cursor/

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Quantum Trade Pro — native Pi CLI backend
+// Quantum Trade Pro — local backend
 //
-// The platform intentionally has one AI path: the embedded Pi agent. Pi owns
-// models, providers, authentication, settings, skills, extensions, sessions,
-// and coding tools. QPRO only supplies its workspace and chart context.
+// Serves the chart app, owns workspace/indicator files, and queues live chart
+// actions for the open browser tab. Coding CLIs talk to /api/qpro/platform;
+// the tab executes them. There is no in-app agent.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -15,7 +15,7 @@ const MAX_BODY_BYTES = Math.max(1024 * 1024, Number(process.env.QPRO_MAX_BODY_BY
 const QPRO_TOKEN = String(process.env.QPRO_TOKEN || '').trim();
 const ALLOWED_ORIGIN = String(process.env.QPRO_ALLOWED_ORIGIN || '').trim();
 // QPRO application state is server-owned, not browser-owned. Keep it beside
-// the isolated Pi workspace so clearing browser storage cannot erase it.
+// the isolated coding workspace so clearing browser storage cannot erase it.
 const QPRO_STATE_DIR = path.join(__dirname, '.qpro');
 const QPRO_STATE_FILE = path.join(QPRO_STATE_DIR, 'workspace-state.json');
 const QPRO_STATE_BACKUP = QPRO_STATE_FILE+'.bak';
@@ -23,12 +23,13 @@ const QPRO_INDICATOR_DIR = path.join(__dirname,'.qpro','pi-workspace','indicator
 const QPRO_INDICATOR_MAX_BYTES = Math.max(64 * 1024, Number(process.env.QPRO_INDICATOR_MAX_BYTES) || 2 * 1024 * 1024);
 const QPRO_VALIDATION_DIR = path.join(__dirname,'.qpro','indicator-validation');
 const QPRO_VALIDATION_TIMEOUT_MS = Math.max(5000, Number(process.env.QPRO_VALIDATION_TIMEOUT_MS) || 30000);
+const QPRO_PLATFORM_DIR = path.join(__dirname,'.qpro','platform-requests');
+const QPRO_PLATFORM_TIMEOUT_MS = Math.max(5000, Number(process.env.QPRO_PLATFORM_TIMEOUT_MS) || 30000);
 const workspaceClients = new Set();
 function broadcastWorkspaceSnapshot(snapshot,savedAt=Date.now()){
   const message='data: '+JSON.stringify({type:'workspace-sync',source:'server',revision:{time:savedAt,tab:'server'},data:snapshot})+'\n\n';
   for(const res of workspaceClients){try{res.write(message);}catch(_){workspaceClients.delete(res);}}
 }
-const piAgent = require('./pi-agent');
 function safeIndicatorPath(value){
   const rel=String(value || '').replace(/\\/g,'/').replace(/^\/+/, '');
   if(!/^indicators\/[a-zA-Z0-9._-]+\.js$/i.test(rel)) throw new Error('indicator path must be indicators/<name>.js');
@@ -150,6 +151,51 @@ async function waitForValidation(record){
   try{fs.unlinkSync(record.file);}catch(_){ }
   throw Object.assign(new Error('browser validation timed out; open QPRO in a browser and try again'),{statusCode:504});
 }
+function platformFile(id){
+  const safe=String(id || '').replace(/[^a-zA-Z0-9_-]/g,'');
+  if(!safe) throw new Error('platform request id required');
+  return path.join(QPRO_PLATFORM_DIR,safe+'.json');
+}
+function writePlatformRecord(file,record){
+  fs.mkdirSync(QPRO_PLATFORM_DIR,{recursive:true,mode:0o700});
+  const temp=file+'.tmp-'+process.pid+'-'+Date.now(); fs.writeFileSync(temp,JSON.stringify(record),{encoding:'utf8',mode:0o600}); fs.renameSync(temp,file);
+}
+function createPlatformRequest(operation,params){
+  const op=String(operation || '').trim();
+  if(!op) throw new Error('platform operation is required');
+  const id='p_'+Date.now().toString(36)+'_'+crypto.randomBytes(6).toString('hex');
+  const file=platformFile(id);
+  writePlatformRecord(file,{id,operation:op,params:params && typeof params==='object'?params:{},status:'pending',createdAt:Date.now()});
+  return {id,operation:op,file};
+}
+function claimPlatformRequest(){
+  fs.mkdirSync(QPRO_PLATFORM_DIR,{recursive:true,mode:0o700});
+  const now=Date.now();
+  for(const name of fs.readdirSync(QPRO_PLATFORM_DIR).filter(x=>x.endsWith('.json')).sort()){
+    const file=path.join(QPRO_PLATFORM_DIR,name); let record;
+    try{record=JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){continue;}
+    if(!record || record.status!=='pending') continue;
+    if(now-Number(record.createdAt||0)>QPRO_PLATFORM_TIMEOUT_MS){try{fs.unlinkSync(file);}catch(_){} continue;}
+    record.status='claimed'; record.claimedAt=now; writePlatformRecord(file,record);
+    return record;
+  }
+  return null;
+}
+async function waitForPlatform(record){
+  const deadline=Date.now()+QPRO_PLATFORM_TIMEOUT_MS;
+  while(Date.now()<deadline){
+    try{
+      const value=JSON.parse(fs.readFileSync(record.file,'utf8'));
+      if(value.status==='complete' || value.status==='error'){
+        try{fs.unlinkSync(record.file);}catch(_){ }
+        return value;
+      }
+    }catch(error){if(error.code!=='ENOENT') throw error;}
+    await wait(150);
+  }
+  try{fs.unlinkSync(record.file);}catch(_){ }
+  throw Object.assign(new Error('browser platform request timed out; open QPRO in a browser and try again'),{statusCode:504});
+}
 function authorized(req){
   if(!QPRO_TOKEN) return HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
   const value=String(req.headers.authorization || ''); return value === 'Bearer '+QPRO_TOKEN || String(req.headers['x-qpro-token'] || '') === QPRO_TOKEN;
@@ -170,7 +216,7 @@ const server = http.createServer(async (req, res) => {
   if(req.url.startsWith('/api/') && !authorized(req)) return json(res,401,{ok:false,error:'QPRO authentication required'});
 
   if(req.method === 'GET' && req.url === '/api/ping'){
-    return json(res, 200, {ok:true, token:'qpro', agent:'pi'});
+    return json(res, 200, {ok:true, token:'qpro', agent:'cli'});
   }
   if(req.method === 'GET' && req.url === '/api/qpro/workspace'){
     try{return json(res,200,readQproState());}
@@ -221,6 +267,31 @@ const server = http.createServer(async (req, res) => {
     try{record=createValidationRequest(payload.path,payload.bars,payload.warmup); const result=await waitForValidation(record); if(result.status==='error') return json(res,502,{ok:false,error:result.error||'browser validation failed',path:result.path,validation:result.validation||null,window:result.window||null}); return json(res,200,{ok:true,path:result.path,hash:result.hash||null,validation:result.validation||null,window:result.window||{requested:record.bars,warmup:record.warmup}});}
     catch(error){return json(res,error?.statusCode||504,{ok:false,error:String(error.message||error),path:payload.path||null});}
   }
+  // Live chart actions run in the open tab. Coding CLIs POST here; the browser
+  // claims the request, executes it, and posts the result back.
+  if(req.method === 'GET' && req.url === '/api/qpro/platform-request'){
+    try{return json(res,200,{ok:true,request:claimPlatformRequest()});}
+    catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'POST' && req.url === '/api/qpro/platform-result'){
+    let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
+    try{
+      const file=platformFile(payload.id); const current=JSON.parse(fs.readFileSync(file,'utf8'));
+      if(current.status!=='claimed') throw new Error('platform request is not claimed');
+      writePlatformRecord(file,{...current,status:payload.error?'error':'complete',result:payload.result,error:payload.error||null,completedAt:Date.now()});
+      return json(res,200,{ok:true,id:current.id});
+    }catch(error){return json(res,400,{ok:false,error:String(error.message||error)});}
+  }
+  if(req.method === 'POST' && req.url === '/api/qpro/platform'){
+    let payload; try{payload=JSON.parse(await readBody(req));}catch(error){return json(res,error?.statusCode||400,{ok:false,error:'bad json'});}
+    let record;
+    try{
+      record=createPlatformRequest(payload.operation,payload.params);
+      const result=await waitForPlatform(record);
+      if(result.status==='error') return json(res,502,{ok:false,error:result.error||'browser platform action failed',operation:record.operation,result:result.result||null});
+      return json(res,200,{ok:true,operation:record.operation,result:result.result});
+    }catch(error){return json(res,error?.statusCode||504,{ok:false,error:String(error.message||error),operation:payload.operation||null});}
+  }
   if(req.method === 'PUT' && req.url === '/api/qpro/workspace'){
     let payload;
     try{payload=JSON.parse(await readBody(req));}
@@ -228,88 +299,6 @@ const server = http.createServer(async (req, res) => {
     if(!payload || !payload.snapshot || typeof payload.snapshot!=='object') return json(res,400,{ok:false,error:'snapshot object required'});
     try{const result=writeQproState(payload.snapshot); broadcastWorkspaceSnapshot(payload.snapshot,result.savedAt); return json(res,200,result);}
     catch(error){return json(res,500,{ok:false,error:String(error.message||error)});}
-  }
-
-  if(req.method === 'GET' && req.url === '/api/pi/commands'){
-    try{ return json(res, 200, {ok:true, commands:await piAgent.nativePiCommands({chatId:'command-catalog'})}); }
-    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
-  }
-  if(req.method === 'GET' && req.url === '/api/pi/sessions'){
-    try{ return json(res, 200, {ok:true, sessions:await piAgent.nativePiSessions()}); }
-    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
-  }
-  if(req.method === 'GET' && req.url === '/api/pi/resources'){
-    try{ const result=await piAgent.nativePiResourceAction({action:'list'}); return json(res, 200, result); }
-    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
-  }
-  if(req.method === 'GET' && req.url === '/api/pi/status'){
-    try{ return json(res, 200, await piAgent.nativePiStatus()); }
-    catch(error){ return json(res, 502, {ok:false,error:String(error && error.message || error)}); }
-  }
-  if(req.method === 'GET' && req.url.startsWith('/api/pi/session-tree')){
-    try{ const file=new URL(req.url,'http://qpro.local').searchParams.get('file'); return json(res, 200, {ok:true,tree:await piAgent.nativePiSessionTree(file)}); }
-    catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
-  }
-
-  if(req.method === 'GET' && req.url === '/api/pi/models'){
-    try{
-      return json(res, 200, {
-        ok:true,
-        models:await piAgent.nativePiModels(),
-        settings:piAgent.nativePiSettings()
-      });
-    }catch(error){
-      return json(res, 502, {ok:false,error:String(error && error.message || error)});
-    }
-  }
-
-  if(req.method === 'POST' && req.url === '/api/pi/stream'){
-    let payload;
-    try{ payload = JSON.parse(await readBody(req)); }
-    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
-    try{
-      res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
-      res.write(': pi-stream\n\n');
-      await piAgent.streamPiAgent(payload || {}, res);
-      console.log(new Date().toISOString(), 'pi/stream complete requestedModel=' + (payload.piModel || 'Pi CLI default'));
-
-    }catch(error){
-      console.log(new Date().toISOString(), 'pi/stream err', error && error.message, 'chatId=' + String(payload?.chatId || 'default'), 'requestedModel=' + String(payload?.piModel || 'Pi CLI default'));
-      if(!res.headersSent) return json(res, 502, {error:String(error && error.message || error)});
-      res.write('event: error\ndata: '+JSON.stringify({type:'error',error:String(error && error.message || error)})+'\n\n');
-      res.end();
-    }
-    return;
-  }
-
-  if(req.method === 'POST' && req.url === '/api/pi/control'){
-    let payload;
-    try{ payload = JSON.parse(await readBody(req)); }
-    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
-    try{
-      const action=String(payload?.action || '');
-      if(['new','resume','fork','clone','tree','list'].includes(action)){
-        return json(res, 200, await piAgent.nativeSessionOperation({...payload,sessionAction:action}));
-      }
-      if(action==='resourceToggle' || action==='resourceReload'){
-        return json(res, 200, await piAgent.nativePiResourceAction({...payload,resourceAction:action==='resourceToggle'?'toggle':'reload'}));
-      }
-      if(action==='cancelSubagent') return json(res, 200, await piAgent.cancelPiSubagent(payload));
-      if(action==='chartResult' || action==='chartError'){
-        return json(res, 200, piAgent.resolveChartRequest(payload.requestId, payload.result, action==='chartError' ? payload.error : null));
-      }
-      return json(res, 200, await piAgent.controlPiAgent(payload || {}));
-    }catch(error){ return json(res, 400, {ok:false,error:String(error && error.message || error)}); }
-  }
-
-  // Kept as a compatibility endpoint for local tests; the browser uses the
-  // streaming endpoint above.
-  if(req.method === 'POST' && req.url === '/api/pi/chat'){
-    let payload;
-    try{ payload = JSON.parse(await readBody(req)); }
-    catch(error){ return json(res, error?.statusCode || 400, {error:error?.statusCode===413?'request body too large':'bad json'}); }
-    try{ return json(res, 200, await piAgent.runPiAgent(payload || {})); }
-    catch(error){ return json(res, 502, {error:String(error && error.message || error)}); }
   }
 
   if(req.method === 'GET' && (req.url === '/' || req.url === '/index.html')){
