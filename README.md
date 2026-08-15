@@ -26,7 +26,10 @@ Live chart actions (draw, candles, symbol/timeframe, alerts) apply immediately:
 node qpro-platform.js list_operations
 node qpro-platform.js get_state
 node qpro-platform.js get_data '{"bars":200}'
-node qpro-platform.js create_drawing '{"type":"horizontal","points":[{"time":1700000000,"price":65000}]}'
+node qpro-platform.js create_drawing '{"type":"horizontal","role":"support","points":[{"time":1700000000,"price":65000}]}'
+node qpro-platform.js move_drawing '{"id":"...","timeDelta":900,"priceDelta":100}'
+node qpro-platform.js create_drawing '{"type":"vprofile","points":[{"time":1700000000,"price":65000},{"time":1700100000,"price":64000}],"settings":{"rows":30,"valueArea":70}}'
+node qpro-platform.js create_drawing '{"type":"anchoredvwap","points":[{"time":1700000000,"price":65000}],"settings":{"source":"hlc3","bands":[1,2]}}'
 ```
 
 Indicator files are the only import source. Validate, then Apply in the browser:

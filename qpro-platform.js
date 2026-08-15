@@ -6,7 +6,14 @@ const operation = process.argv[2];
 const rawParams = process.argv[3];
 const baseUrl = String(process.env.QPRO_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 if (!operation || operation === '--help' || operation === '-h') {
-  console.log('usage: node qpro-platform.js <operation> [json-params]\n\nexamples:\n  node qpro-platform.js list_operations\n  node qpro-platform.js get_state\n  node qpro-platform.js get_data \'{"bars":200}\'\n  node qpro-platform.js create_drawing \'{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}]}\'');
+  console.log(`usage: node qpro-platform.js <operation> [json-params]
+
+examples:
+  node qpro-platform.js list_operations
+  node qpro-platform.js get_state
+  node qpro-platform.js get_data '{"bars":200}'
+  node qpro-platform.js create_drawing '{"type":"trendline","points":[{"time":1700000000,"price":100},{"time":1700100000,"price":110}]}'
+  node qpro-platform.js move_drawing '{"id":"...","timeDelta":900,"priceDelta":100}'`);
   process.exit(operation ? 0 : 1);
 }
 let params = {};
